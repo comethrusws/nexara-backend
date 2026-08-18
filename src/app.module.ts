@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration from './common/config/configuration';
 import { FineractModule } from './integrations/fineract/fineract.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -26,6 +27,7 @@ import { HealthModule } from './modules/health/health.module';
       }),
     }),
     FineractModule,
+    AuthModule,
     HealthModule,
   ],
 })

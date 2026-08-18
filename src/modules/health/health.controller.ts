@@ -3,7 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { FineractAdapter } from '../../integrations/fineract/fineract.adapter';
+import { Public } from '../auth/decorators/public.decorator';
 
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(
