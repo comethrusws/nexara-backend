@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Harbor Kirana — create, fund, pay</title>
+  <style>
+    :root {
+      --bg: #fcfcfc;
+      --text: #141414;
+      --muted: #5c5c5c;
+      --line: #d8d8d8;
+      --fill: #f3f3f3;
+      --accent: #3685bf;
+      --on-accent: #fcfcfc;
+      --ok: #1f8a65;
+      --warn: #9a6700;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 system-ui, Segoe UI, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .page {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+    h1 { font-size: 24px; line-height: 1.25; margin: 0 0 8px; }
+    h2 { font-size: 18px; margin: 32px 0 8px; }
+    h3 { font-size: 16px; margin: 0 0 8px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 16px 0 24px;
+    }
+    button, .nav button {
+      font: inherit;
+      border: 1px solid var(--line);
+      background: var(--fill);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--accent);
+      color: var(--on-accent);
+      border-color: var(--accent);
+    }
+    button.active {
+      background: var(--accent);
+      color: var(--on-accent);
+      border-color: var(--accent);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin: 16px 0 8px;
+    }
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .stat strong { display: block; font-size: 18px; }
+    .stat span { color: var(--muted); font-size: 12px; }
+    svg.map { width: 100%; max-width: 920px; height: auto; display: block; margin: 12px 0 8px; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .panel-h {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--fill);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .panel-b { padding: 16px; }
+    .api {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 13px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--fill);
+      margin-bottom: 16px;
+    }
+    .cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    ul { margin: 0; padding-left: 18px; }
+    li { margin: 0 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #999; }
+    .dot.success { background: var(--ok); }
+    .dot.info { background: var(--accent); }
+    .dot.warning { background: var(--warn); }
+    .caption { font-size: 12px; color: var(--muted); }
+    @media (max-width: 720px) {
+      .stats, .cols { grid-template-columns: 1fr; }
+    }
+    @media print {
+      .toolbar { display: none; }
+      .page { padding: 0; max-width: none; }
+      .panel { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Harbor Kirana: create, fund, pay</h1>
+    <p>
+      One journey from ops onboarding to a merchant IMPS payout.
+      Click a step. The map highlights who talks to whom; the panel lists the API
+      and exactly what is written where.
+    </p>
+    <div class="toolbar">
+      <button class="primary" type="button" onclick="window.print()">Print / Save as PDF</button>
+      <button type="button" id="prev">Previous</button>
+      <button type="button" id="next">Next</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><strong>9</strong><span>Steps in this journey</span></div>
+      <div class="stat"><strong>Fineract</strong><span>Owns balances</span></div>
+      <div class="stat"><strong>Postgres</strong><span>Owns people, KYC, payout orders</span></div>
+    </div>
+
+    <h2>How the pieces connect</h2>
+    <p class="caption">UIs never call Fineract or the bank. Nest is the only public API. Highlighted boxes are used in the selected step.</p>
+    <svg class="map" viewBox="0 0 760 220" aria-label="System connection map">
+      <g id="edges"></g>
+      <g id="nodes"></g>
+    </svg>
+
+    <h2>Journey</h2>
+    <div class="pills" id="pills"></div>
+
+    <div class="panel">
+      <div class="panel-h">
+        <span id="panel-title"></span>
+        <span id="panel-actor"></span>
+      </div>
+      <div class="panel-b">
+        <div class="api" id="api"></div>
+        <div class="cols">
+          <div>
+            <h3>What happens</h3>
+            <ul id="happens"></ul>
+          </div>
+          <div>
+            <h3>Where data is stored</h3>
+            <table>
+              <thead><tr><th>Store</th><th>Written this step</th></tr></thead>
+              <tbody id="stores"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h2>All nine APIs at a glance</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Step</th><th>Who</th><th>API</th><th>Postgres</th><th>Fineract</th><th>Other</th>
+        </tr>
+      </thead>
+      <tbody id="overview"></tbody>
+    </table>
+    <p class="caption">After a successful payout, GET /v1/me/wallet and GET /v1/me/activity only read Fineract (plus wallet_mapping). They do not insert rows.</p>
+  </div>
+
+  <script>
+    const STEPS = [
+      { id: 1, title: "Ops signs in", actor: "Ops", method: "POST", path: "/v1/auth/login",
+        happens: ["Ops sends email + password.", "Nest loads app_user, checks bcrypt hash, issues a JWT.", "No money moves. This token is required on every later ops call."],
+        stores: [{ place: "PostgreSQL (read)", writes: "app_user — lookup only, nothing inserted", tone: "neutral" }],
+        systems: ["ops", "nest", "pg"] },
+      { id: 2, title: "Create Harbor Kirana", actor: "Ops", method: "POST", path: "/v1/ops/merchants",
+        happens: ["Nest creates a MERCHANT organization under the chosen parent (admin / SD / distributor).", "Merchant profile is stored with status CREATED, default Silver tier, fees, and limits.", "A merchant login user is created (default password ChangeMe#2026).", "KYC row starts PENDING. Wallet is not opened yet."],
+        stores: [
+          { place: "PostgreSQL", writes: "organization (type MERCHANT, parent_id)", tone: "info" },
+          { place: "PostgreSQL", writes: "merchant (profile, limits, fees, tier)", tone: "info" },
+          { place: "PostgreSQL", writes: "merchant_kyc (Aadhaar/PAN PENDING)", tone: "info" },
+          { place: "PostgreSQL", writes: "app_user (role MERCHANT, linked merchant_id)", tone: "info" },
+          { place: "Fineract", writes: "nothing yet", tone: "neutral" }
+        ], systems: ["ops", "nest", "pg"] },
+      { id: 3, title: "Verify Aadhaar", actor: "Ops", method: "POST", path: "/v1/ops/merchants/:id/kyc/aadhaar",
+        happens: ["Nest sends the 12-digit Aadhaar to the KYC adapter (mock today, DigiLocker later).", "Adapter returns VERIFIED or FAILED plus a masked value.", "Nest stores last-4 and provider ref only — never the full Aadhaar number."],
+        stores: [
+          { place: "KYC adapter", writes: "verifyAadhaar — no Nexara DB of its own", tone: "warning" },
+          { place: "PostgreSQL", writes: "merchant_kyc.aadhaar_status, aadhaar_last4, aadhaar_provider_ref", tone: "info" }
+        ], systems: ["ops", "nest", "kyc", "pg"] },
+      { id: 4, title: "Verify PAN", actor: "Ops", method: "POST", path: "/v1/ops/merchants/:id/kyc/pan",
+        happens: ["Same pattern as Aadhaar: adapter verifies, Nest stores a masked PAN.", "Merchant status typically moves to KYC_PENDING until images match and activate runs."],
+        stores: [
+          { place: "KYC adapter", writes: "verifyPan", tone: "warning" },
+          { place: "PostgreSQL", writes: "merchant_kyc.pan_status, pan_masked, pan_provider_ref", tone: "info" }
+        ], systems: ["ops", "nest", "kyc", "pg"] },
+      { id: 5, title: "Upload KYC images", actor: "Ops", method: "POST", path: "/v1/ops/merchants/:id/kyc/documents",
+        happens: ["Multipart files: aadhaarFront, aadhaarBack, pan, selfie.", "Files are written to disk under uploads/kyc/{merchantId}/.", "Postgres stores paths. Mock match is MATCHED if API already verified (filename containing mismatch → MISMATCH)."],
+        stores: [
+          { place: "Disk", writes: "uploads/kyc/{id}/aadhaar-front, pan, selfie", tone: "warning" },
+          { place: "PostgreSQL", writes: "merchant_kyc image paths + aadhaar_image_match / pan_image_match", tone: "info" }
+        ], systems: ["ops", "nest", "pg"] },
+      { id: 6, title: "Activate merchant (open wallet)", actor: "Ops", method: "POST", path: "/v1/ops/merchants/:id/activate",
+        happens: ["Nest refuses unless Aadhaar+PAN are VERIFIED and both image matches are MATCHED.", "Ancestors must be ACTIVE and feature WALLET must be allowed.", "Fineract creates a client and a savings account (Nexara Merchant Wallet).", "Nest saves only the Fineract ids. Merchant becomes ACTIVE. Inbox gets a notification."],
+        stores: [
+          { place: "Fineract", writes: "client + savings account — this is the wallet", tone: "success" },
+          { place: "PostgreSQL", writes: "wallet_mapping (fineract_client_id, fineract_savings_account_id)", tone: "info" },
+          { place: "PostgreSQL", writes: "merchant.status = ACTIVE", tone: "info" },
+          { place: "PostgreSQL", writes: "notification (MERCHANT_ACTIVATED)", tone: "info" }
+        ], systems: ["ops", "nest", "pg", "fineract"] },
+      { id: 7, title: "Add cash to the wallet", actor: "Ops", method: "POST", path: "/v1/ops/wallets/:merchantId/funding",
+        happens: ['Body: { amount: "50000.00", channel: "CASH", externalRef: "CASH-001" }.', "Nest looks up wallet_mapping, then deposits into the Fineract savings account.", "Balances in the API response are read back from Fineract, not summed in Postgres.", "UPI / bank / card would only insert a PENDING funding row (409) until collection-account posting exists."],
+        stores: [
+          { place: "Fineract", writes: "savings deposit — available balance increases", tone: "success" },
+          { place: "PostgreSQL", writes: "wallet_funding (CASH, POSTED, external_ref)", tone: "info" }
+        ], systems: ["ops", "nest", "pg", "fineract"] },
+      { id: 8, title: "Merchant signs in", actor: "Merchant", method: "POST", path: "/v1/auth/otp/request then /v1/auth/otp/verify",
+        happens: ["Merchant uses the mobile on the merchant record. Dev OTP is 123456.", "Email+password login also works (ChangeMe#2026 until they change it).", "JWT now has role MERCHANT and merchantId — portal routes /v1/me/* unlock."],
+        stores: [
+          { place: "PostgreSQL", writes: "otp_challenge (hashed code, expiry, consumed_at)", tone: "info" },
+          { place: "PostgreSQL (read)", writes: "app_user — issue JWT, no extra user row", tone: "neutral" }
+        ], systems: ["merchant", "nest", "pg"] },
+      { id: 9, title: "Pay a supplier", actor: "Merchant", method: "POST", path: "/v1/me/payouts",
+        happens: ["Nest checks merchant ACTIVE, rail feature (IMPS/NEFT/RTGS/UPI), daily and per-payout limits.", "Bank is resolved from org override → parent → platform default (MOCK locally).", "Fee + GST are calculated. Reserved = amount + fee + GST (e.g. 20000 + 10 + 1.80).", "Fineract holds reserved. Bank adapter is called. Success: hold released, payout/fee/GST debited. Fail: hold released only.", "Inbox + webhook fire. Same merchantReference is idempotent."],
+        stores: [
+          { place: "PostgreSQL", writes: "payout (order, fee, gst, reserved, status, bank_code, bank_reference)", tone: "info" },
+          { place: "PostgreSQL", writes: "payout_status_event (FUNDS_BLOCKED → SUBMITTED → SUCCESS/FAILED)", tone: "info" },
+          { place: "Fineract", writes: "hold, then debit payout+fee+GST — or release hold on fail", tone: "success" },
+          { place: "Bank adapter", writes: "initiatePayout — money leaves via MOCK / YES Bank / …", tone: "warning" },
+          { place: "PostgreSQL", writes: "notification + webhook_delivery", tone: "info" }
+        ], systems: ["merchant", "nest", "pg", "fineract", "bank"] }
+    ];
+
+    const NODES = [
+      { id: "merchant", label: "Merchant UI", x: 20, y: 28 },
+      { id: "ops", label: "Ops UI", x: 20, y: 108 },
+      { id: "nest", label: "NestJS API", x: 240, y: 68 },
+      { id: "pg", label: "PostgreSQL", x: 500, y: 8 },
+      { id: "fineract", label: "Fineract", x: 500, y: 68 },
+      { id: "kyc", label: "KYC adapter", x: 500, y: 128 },
+      { id: "bank", label: "Bank adapter", x: 500, y: 188 }
+    ];
+    const EDGES = [
+      ["merchant", "nest"], ["ops", "nest"],
+      ["nest", "pg"], ["nest", "fineract"], ["nest", "kyc"], ["nest", "bank"]
+    ];
+
+    let stepId = 1;
+
+    function nodeById(id) { return NODES.find((n) => n.id === id); }
+    function center(n) { return { x: n.x + 66, y: n.y + 22 }; }
+
+    function drawMap(active) {
+      const edges = document.getElementById("edges");
+      const nodes = document.getElementById("nodes");
+      edges.innerHTML = "";
+      nodes.innerHTML = "";
+      EDGES.forEach(([from, to]) => {
+        const a = center(nodeById(from));
+        const b = center(nodeById(to));
+        const hot = active.includes(from) && active.includes(to);
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
+        line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
+        line.setAttribute("stroke", hot ? "#3685bf" : "#c8c8c8");
+        line.setAttribute("stroke-width", hot ? "2" : "1");
+        edges.appendChild(line);
+      });
+      NODES.forEach((n) => {
+        const on = active.includes(n.id);
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", n.x); rect.setAttribute("y", n.y);
+        rect.setAttribute("width", "132"); rect.setAttribute("height", "44");
+        rect.setAttribute("rx", "6");
+        rect.setAttribute("fill", on ? "#e8f2fa" : "#f3f3f3");
+        rect.setAttribute("stroke", on || n.id === "nest" ? "#3685bf" : "#d0d0d0");
+        rect.setAttribute("stroke-width", on ? "2" : "1");
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", n.x + 66); text.setAttribute("y", n.y + 27);
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("fill", "#141414");
+        text.setAttribute("font-size", "12");
+        text.setAttribute("font-family", "system-ui, Segoe UI, sans-serif");
+        text.textContent = n.label;
+        g.appendChild(rect); g.appendChild(text);
+        nodes.appendChild(g);
+      });
+    }
+
+    function render() {
+      const step = STEPS.find((s) => s.id === stepId);
+      document.getElementById("pills").innerHTML = STEPS.map((s) =>
+        `<button type="button" class="${s.id === stepId ? "active" : ""}" data-id="${s.id}">${s.id}. ${s.title}</button>`
+      ).join("");
+      document.getElementById("panel-title").textContent = `Step ${step.id} — ${step.title}`;
+      document.getElementById("panel-actor").textContent = step.actor;
+      document.getElementById("api").textContent = `${step.method}  ${step.path}   ·   called by ${step.actor}`;
+      document.getElementById("happens").innerHTML = step.happens.map((l) => `<li>${l}</li>`).join("");
+      document.getElementById("stores").innerHTML = step.stores.map((s) =>
+        `<tr><td><span class="dot ${s.tone}"></span>${s.place}</td><td>${s.writes}</td></tr>`
+      ).join("");
+      document.getElementById("overview").innerHTML = STEPS.map((s) => {
+        const pg = s.stores.some((x) => x.place.startsWith("PostgreSQL") && x.tone === "info") ? "yes" : "read / none";
+        const fi = s.stores.some((x) => x.place === "Fineract" && x.tone === "success") ? "yes" : "no";
+        const other = s.stores.filter((x) => !x.place.startsWith("PostgreSQL") && x.place !== "Fineract").map((x) => x.place).join(", ") || "—";
+        return `<tr><td>${s.id}</td><td>${s.actor}</td><td>${s.method} ${s.path}</td><td>${pg}</td><td>${fi}</td><td>${other}</td></tr>`;
+      }).join("");
+      drawMap(step.systems);
+      document.getElementById("prev").disabled = stepId === 1;
+      document.getElementById("next").disabled = stepId === STEPS.length;
+    }
+
+    document.getElementById("pills").addEventListener("click", (e) => {
+      const id = e.target.getAttribute("data-id");
+      if (id) { stepId = Number(id); render(); }
+    });
+    document.getElementById("prev").onclick = () => { if (stepId > 1) { stepId -= 1; render(); } };
+    document.getElementById("next").onclick = () => { if (stepId < STEPS.length) { stepId += 1; render(); } };
+    render();
+  </script>
+</body>
+</html>
