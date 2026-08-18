@@ -1,0 +1,35 @@
+# compiled
+/dist
+/node_modules
+/coverage
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+logs
+*.log
+npm-debug.log*
+
+# os / ide
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# test
+/.nyc_output
+
+# fineract local payloads
+scripts/_tmp.json
+scripts/_auth.json
+scripts/fineract-setup-result.json
+
+# kyc uploads
+/uploads
+
+# local frontend mock copy (not part of this API)
+/nexara-plat-frontend
