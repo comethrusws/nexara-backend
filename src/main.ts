@@ -6,6 +6,7 @@ import { NextFunction, Response } from 'express';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/errors/http-exception.filter';
 import { RequestWithId } from './common/logging/request-id.middleware';
+import { setupSwagger } from './common/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -13,6 +14,7 @@ async function bootstrap() {
   const port = config.get<number>('port') ?? 3000;
 
   app.setGlobalPrefix('v1');
+  setupSwagger(app);
   app.enableCors();
   app.use((req: RequestWithId, res: Response, next: NextFunction) => {
     const header = req.header('x-request-id');
@@ -34,6 +36,7 @@ async function bootstrap() {
 
   await app.listen(port);
   Logger.log(`Nexara API listening on http://localhost:${port}/v1`);
+  Logger.log(`Swagger UI http://localhost:${port}/docs`);
 }
 
 void bootstrap();

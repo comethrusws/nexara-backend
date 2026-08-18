@@ -1,12 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { ApiTags } from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
 import { FineractAdapter } from '../../integrations/fineract/fineract.adapter';
 import { Public } from '../auth/decorators/public.decorator';
 import { OrganizationsService } from '../organizations/organizations.service';
 
 @Public()
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
