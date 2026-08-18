@@ -9,7 +9,9 @@ import { HealthModule } from './modules/health/health.module';
 import { MerchantsModule } from './modules/merchants/merchants.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { PayoutsModule } from './modules/payouts/payouts.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -37,7 +39,9 @@ import { WalletModule } from './modules/wallet/wallet.module';
     OrganizationsModule,
     WalletModule,
     MerchantsModule,
+    PayoutsModule,
     NotificationsModule,
+    WebhooksModule,
     AuditModule,
   ],
 })
