@@ -3,8 +3,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration from './common/config/configuration';
 import { FineractModule } from './integrations/fineract/fineract.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 
@@ -33,6 +35,8 @@ import { WalletModule } from './modules/wallet/wallet.module';
     HealthModule,
     OrganizationsModule,
     WalletModule,
+    NotificationsModule,
+    AuditModule,
   ],
 })
 export class AppModule {}
