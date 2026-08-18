@@ -4,6 +4,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { FineractAdapter } from '../../integrations/fineract/fineract.adapter';
 import { Public } from '../auth/decorators/public.decorator';
+import { OrganizationsService } from '../organizations/organizations.service';
 
 @Public()
 @Controller('health')
@@ -12,6 +13,7 @@ export class HealthController {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly fineract: FineractAdapter,
     private readonly config: ConfigService,
+    private readonly organizations: OrganizationsService,
   ) {}
 
   @Get()
@@ -21,10 +23,19 @@ export class HealthController {
 
   @Get('ready')
   async ready() {
+    let defaultBank: string | null = null;
+    try {
+      const banks = await this.organizations.listBanks();
+      defaultBank = banks.find((bank) => bank.isDefault)?.code ?? null;
+    } catch {
+      defaultBank = null;
+    }
     const checks = {
       postgres: false,
       fineract: false,
       kycProvider: this.config.get<string>('kyc.provider') ?? 'mock',
+      bankProviderSeed: this.config.get<string>('bank.provider') ?? 'mock',
+      defaultBank,
     };
 
     try {

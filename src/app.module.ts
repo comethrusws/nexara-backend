@@ -5,6 +5,7 @@ import configuration from './common/config/configuration';
 import { FineractModule } from './integrations/fineract/fineract.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { OrganizationsModule } from './modules/organizations/organizations.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { HealthModule } from './modules/health/health.module';
     FineractModule,
     AuthModule,
     HealthModule,
+    OrganizationsModule,
   ],
 })
 export class AppModule {}
