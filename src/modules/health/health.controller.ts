@@ -1,11 +1,15 @@
 import { Controller, Get } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { FineractAdapter } from '../../integrations/fineract/fineract.adapter';
 
 @Controller('health')
 export class HealthController {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly fineract: FineractAdapter,
+    private readonly config: ConfigService,
   ) {}
 
   @Get()
@@ -15,7 +19,11 @@ export class HealthController {
 
   @Get('ready')
   async ready() {
-    const checks = { postgres: false };
+    const checks = {
+      postgres: false,
+      fineract: false,
+      kycProvider: this.config.get<string>('kyc.provider') ?? 'mock',
+    };
 
     try {
       await this.dataSource.query('SELECT 1');
@@ -24,9 +32,14 @@ export class HealthController {
       checks.postgres = false;
     }
 
-    return {
-      status: checks.postgres ? 'ok' : 'degraded',
-      checks,
-    };
+    try {
+      await this.fineract.ping();
+      checks.fineract = true;
+    } catch {
+      checks.fineract = false;
+    }
+
+    const status = checks.postgres && checks.fineract ? 'ok' : 'degraded';
+    return { status, checks };
   }
 }

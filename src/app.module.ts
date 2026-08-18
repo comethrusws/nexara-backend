@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration from './common/config/configuration';
+import { FineractModule } from './integrations/fineract/fineract.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -24,6 +25,7 @@ import { HealthModule } from './modules/health/health.module';
         logging: ['error'],
       }),
     }),
+    FineractModule,
     HealthModule,
   ],
 })
