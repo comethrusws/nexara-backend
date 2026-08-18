@@ -6,6 +6,7 @@ import { FineractModule } from './integrations/fineract/fineract.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { MerchantsModule } from './modules/merchants/merchants.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -35,6 +36,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
     HealthModule,
     OrganizationsModule,
     WalletModule,
+    MerchantsModule,
     NotificationsModule,
     AuditModule,
   ],
