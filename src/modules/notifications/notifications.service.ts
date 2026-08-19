@@ -66,6 +66,13 @@ export class NotificationsService {
     });
   }
 
+  async listAll() {
+    return this.notes.find({
+      order: { createdAt: "DESC" },
+      take: 100,
+    });
+  }
+
   async listFor(user: AuthUser) {
     const rows = await this.notes.find({
       order: { createdAt: 'DESC' },

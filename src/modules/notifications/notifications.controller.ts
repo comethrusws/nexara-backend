@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -17,6 +17,11 @@ export class NotificationsOpsController {
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
   ) {}
+
+  @Get()
+  async list() {
+    return this.notifications.listAll();
+  }
 
   @Post('broadcast')
   async broadcast(
