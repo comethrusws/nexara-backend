@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthController } from './auth.controller';
+import { TeamController } from './team.controller';
 import { AuthService } from './auth.service';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { User } from './entities/user.entity';
@@ -23,7 +24,7 @@ import { UsersService } from './users.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, TeamController],
   providers: [
     UsersService,
     AuthService,
