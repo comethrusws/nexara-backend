@@ -270,8 +270,10 @@ export class FineractAdapter implements FineractPort {
       submittedOnDate: input.date,
       dateFormat: 'dd MMMM yyyy',
       locale: 'en',
-      clientTypeId: input.clientTypeId,
     };
+    if (input.clientTypeId && input.clientTypeId > 0) {
+      payload.clientTypeId = input.clientTypeId;
+    }
     if (input.mobileNo) {
       payload.mobileNo = input.mobileNo;
     }
