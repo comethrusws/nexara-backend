@@ -118,6 +118,22 @@ export class NotificationsService {
     return { read: true };
   }
 
+  async markAllRead(user: AuthUser) {
+    const visible = await this.listFor(user);
+    const unread = visible.filter((n) => !n.read);
+    for (const n of unread) {
+      const existing = await this.reads.findOne({
+        where: { userId: user.id, notificationId: n.id },
+      });
+      if (!existing) {
+        await this.reads.save(
+          this.reads.create({ userId: user.id, notificationId: n.id }),
+        );
+      }
+    }
+    return { success: true, count: unread.length };
+  }
+
   private isVisible(row: Notification, user: AuthUser): boolean {
     if (row.userId && row.userId === user.id) {
       return true;

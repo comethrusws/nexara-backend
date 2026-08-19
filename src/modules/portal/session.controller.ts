@@ -31,6 +31,11 @@ export class SessionController {
     return this.notifications.listFor(user);
   }
 
+  @Post('notifications/read-all')
+  markAllRead(@CurrentUser() user: AuthUser) {
+    return this.notifications.markAllRead(user);
+  }
+
   @Post('notifications/:id/read')
   markRead(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.notifications.markRead(user.id, id);
