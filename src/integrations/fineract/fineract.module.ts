@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import * as https from 'node:https';
 import { FineractAdapter } from './fineract.adapter';
 import { FineractClient } from './fineract.client';
+import { MockFineractAdapter } from './fineract.mock';
 import { FINERACT_PORT } from './fineract.types';
 
 @Module({
@@ -34,11 +35,20 @@ import { FINERACT_PORT } from './fineract.types';
   providers: [
     FineractClient,
     FineractAdapter,
+    MockFineractAdapter,
     {
       provide: FINERACT_PORT,
-      useExisting: FineractAdapter,
+      useFactory: (config: ConfigService, real: FineractAdapter, mock: MockFineractAdapter) => {
+        const provider = config.get<string>('fineract.provider') || process.env.FINERACT_PROVIDER || 'mock';
+        if (provider === 'mock') {
+          return mock;
+        }
+        return real;
+      },
+      inject: [ConfigService, FineractAdapter, MockFineractAdapter],
     },
   ],
-  exports: [FINERACT_PORT, FineractAdapter],
+  exports: [FINERACT_PORT, FineractAdapter, MockFineractAdapter],
 })
 export class FineractModule {}
+
