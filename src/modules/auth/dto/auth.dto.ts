@@ -11,13 +11,13 @@ export class LoginDto {
 
 export class RequestOtpDto {
   @IsString()
-  @Matches(/^\d{10}$/, { message: 'mobile must be 10 digits' })
+  @Matches(/^(\+?91)?[6-9]\d{9}$/, { message: 'mobile must be 10 digits' })
   mobile: string;
 }
 
 export class VerifyOtpDto {
   @IsString()
-  @Matches(/^\d{10}$/, { message: 'mobile must be 10 digits' })
+  @Matches(/^(\+?91)?[6-9]\d{9}$/, { message: 'mobile must be 10 digits' })
   mobile: string;
 
   @IsString()

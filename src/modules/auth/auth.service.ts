@@ -39,8 +39,14 @@ export class AuthService {
     return this.issue(user);
   }
 
+  private normalizeMobile(mobile: string): string {
+    const digits = mobile.replace(/\D/g, '');
+    return digits.length > 10 ? digits.slice(-10) : digits;
+  }
+
   async requestOtp(mobile: string) {
-    const user = await this.users.findByMobile(mobile);
+    const cleanMobile = this.normalizeMobile(mobile);
+    const user = await this.users.findByMobile(cleanMobile);
     if (!user || user.status !== 'ACTIVE') {
       throw new NexaraError(
         ErrorCodes.UNAUTHORIZED,
@@ -50,7 +56,7 @@ export class AuthService {
     }
     const demoCode = this.config.get<string>('auth.otpCode') ?? '123456';
     const challenge = this.otps.create({
-      mobile,
+      mobile: cleanMobile,
       codeHash: await bcrypt.hash(demoCode, 8),
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
       consumedAt: null,
@@ -64,7 +70,8 @@ export class AuthService {
   }
 
   async verifyOtp(mobile: string, code: string) {
-    const user = await this.users.findByMobile(mobile);
+    const cleanMobile = this.normalizeMobile(mobile);
+    const user = await this.users.findByMobile(cleanMobile);
     if (!user || user.status !== 'ACTIVE') {
       throw new NexaraError(
         ErrorCodes.UNAUTHORIZED,
@@ -73,7 +80,7 @@ export class AuthService {
       );
     }
     const row = await this.otps.findOne({
-      where: { mobile, consumedAt: IsNull() },
+      where: { mobile: cleanMobile, consumedAt: IsNull() },
       order: { createdAt: 'DESC' },
     });
     if (!row || row.consumedAt || row.expiresAt.getTime() < Date.now()) {
