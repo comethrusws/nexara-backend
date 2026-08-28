@@ -30,6 +30,10 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
         username: config.get<string>('database.username'),
         password: config.get<string>('database.password'),
         database: config.get<string>('database.name'),
+        ssl:
+          config.get<boolean>('database.ssl') === true
+            ? { rejectUnauthorized: false }
+            : false,
         autoLoadEntities: true,
         synchronize: config.get<boolean>('database.synchronize') === true,
         logging: ['error'],

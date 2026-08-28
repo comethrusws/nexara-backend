@@ -8,6 +8,7 @@ export default () => ({
     password: process.env.DATABASE_PASSWORD ?? 'nexara',
     name: process.env.DATABASE_NAME ?? 'nexara',
     synchronize: process.env.DATABASE_SYNC === 'true',
+    ssl: process.env.DATABASE_SSL === 'true',
   },
   fineract: {
     baseUrl:
