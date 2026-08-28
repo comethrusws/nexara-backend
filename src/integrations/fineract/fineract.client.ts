@@ -2,6 +2,7 @@ import { HttpService } from '@nestjs/axios';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AxiosError } from 'axios';
+import * as https from 'node:https';
 import { firstValueFrom } from 'rxjs';
 import { NexaraError, ErrorCodes } from '../../common/errors/nexara-error';
 import { mapFineractError } from './fineract.mapper';
@@ -13,7 +14,14 @@ export class FineractClient {
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    if (process.env.FINERACT_TLS_INSECURE !== 'false') {
+      this.http.axiosRef.defaults.httpsAgent = new https.Agent({
+        rejectUnauthorized: false,
+      });
+      this.http.axiosRef.defaults.proxy = false;
+    }
+  }
 
   async get<T = unknown>(path: string): Promise<T> {
     return this.request<T>('GET', path);
@@ -45,8 +53,9 @@ export class FineractClient {
       const durationMs = Date.now() - started;
       if (error instanceof AxiosError) {
         const status = error.response?.status ?? 0;
+        const baseURL = this.http.axiosRef.defaults.baseURL ?? '';
         this.logger.warn(
-          `Fineract ${method} ${path} status=${status} durationMs=${durationMs}`,
+          `Fineract ${method} ${path} status=${status} code=${error.code ?? 'none'} message=${error.message} baseURL=${baseURL} durationMs=${durationMs}`,
         );
         throw mapFineractError(
           status,

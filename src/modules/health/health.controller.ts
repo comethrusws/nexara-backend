@@ -32,9 +32,17 @@ export class HealthController {
     } catch {
       defaultBank = null;
     }
-    const checks = {
+    const checks: {
+      postgres: boolean;
+      fineract: boolean;
+      fineractError: string | null;
+      kycProvider: string;
+      bankProviderSeed: string;
+      defaultBank: string | null;
+    } = {
       postgres: false,
       fineract: false,
+      fineractError: null,
       kycProvider: this.config.get<string>('kyc.provider') ?? 'mock',
       bankProviderSeed: this.config.get<string>('bank.provider') ?? 'mock',
       defaultBank,
@@ -50,8 +58,10 @@ export class HealthController {
     try {
       await this.fineract.ping();
       checks.fineract = true;
-    } catch {
+    } catch (error) {
       checks.fineract = false;
+      checks.fineractError =
+        error instanceof Error ? error.message : 'Fineract ping failed';
     }
 
     const status = checks.postgres && checks.fineract ? 'ok' : 'degraded';

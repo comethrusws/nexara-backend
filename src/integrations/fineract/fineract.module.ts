@@ -12,10 +12,11 @@ import { FINERACT_PORT } from './fineract.types';
     HttpModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        const tlsInsecure = config.get<boolean>('fineract.tlsInsecure') === true;
+        const tlsInsecure = process.env.FINERACT_TLS_INSECURE !== 'false';
         return {
           baseURL: config.get<string>('fineract.baseUrl'),
           timeout: 20000,
+          proxy: false,
           httpsAgent: tlsInsecure
             ? new https.Agent({ rejectUnauthorized: false })
             : undefined,

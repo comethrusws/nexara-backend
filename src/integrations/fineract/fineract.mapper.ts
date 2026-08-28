@@ -49,7 +49,9 @@ export function mapFineractError(
   if (status >= 500 || status === 0) {
     return new NexaraError(
       ErrorCodes.FINERACT_UNAVAILABLE,
-      'Fineract is unavailable',
+      status === 0 && fallbackMessage
+        ? `Fineract is unavailable: ${fallbackMessage}`
+        : 'Fineract is unavailable',
       502,
     );
   }
