@@ -238,6 +238,20 @@ export class BbpsPayDto {
   mpin: string;
 }
 
+export class ResetMpinWithPanDto {
+  @ApiProperty({ example: 'ABCDE1234F' })
+  @IsString()
+  @Matches(/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/, {
+    message: 'pan must be 10 characters formatted like ABCDE1234F',
+  })
+  pan: string;
+
+  @ApiProperty({ description: 'New 6-digit transaction PIN', example: '123456' })
+  @IsString()
+  @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
+  mpin: string;
+}
+
 export class ReconciliationResolveDto {
   @ApiPropertyOptional({ format: 'uuid' })
   @IsOptional()

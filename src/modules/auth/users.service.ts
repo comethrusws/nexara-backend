@@ -211,6 +211,47 @@ export class UsersService implements OnModuleInit {
     return { success: true, reset: true };
   }
 
+  async resetMpinWithPan(
+    userId: string,
+    pan: string,
+    mpin: string,
+    merchantPan?: string | null,
+  ) {
+    if (!MPIN_PATTERN.test(mpin)) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        MPIN_VALIDATION_MESSAGE,
+        400,
+      );
+    }
+    const user = await this.requireActive(userId);
+    if (user.role !== UserRole.MERCHANT) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only merchant accounts can reset a transaction PIN',
+        403,
+      );
+    }
+    const cleanInputPan = pan.toUpperCase().trim();
+    if (merchantPan && merchantPan.trim().length > 0) {
+      const cleanMerchantPan = merchantPan.toUpperCase().trim();
+      const match =
+        cleanInputPan === cleanMerchantPan ||
+        cleanMerchantPan.includes(cleanInputPan) ||
+        cleanInputPan.includes(cleanMerchantPan);
+      if (!match) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'PAN number does not match registered merchant records',
+          400,
+        );
+      }
+    }
+    user.mpinHash = await bcrypt.hash(mpin, 10);
+    await this.users.save(user);
+    return { success: true, reset: true };
+  }
+
   async clearMpinForMerchant(merchantId: string): Promise<{ success: true }> {
     const user = await this.findMerchantUser(merchantId);
     if (!user) {
