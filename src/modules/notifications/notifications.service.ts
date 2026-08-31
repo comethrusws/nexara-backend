@@ -13,6 +13,7 @@ export const NotificationAudience = {
   SUPER_DISTRIBUTOR: 'SUPER_DISTRIBUTOR',
   DISTRIBUTOR: 'DISTRIBUTOR',
   MERCHANT: 'MERCHANT',
+  SPECIFIC: 'SPECIFIC',
 } as const;
 
 @Injectable()
@@ -50,12 +51,19 @@ export class NotificationsService {
     audience: string;
     title: string;
     body: string;
+    recipientId?: string;
   }): Promise<Notification> {
     const allowed = Object.values(NotificationAudience);
     if (!allowed.includes(input.audience as (typeof allowed)[number])) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
-        'audience must be ALL, ADMIN, SUPER_DISTRIBUTOR, DISTRIBUTOR, or MERCHANT',
+        'audience must be ALL, ADMIN, SUPER_DISTRIBUTOR, DISTRIBUTOR, MERCHANT, or SPECIFIC',
+      );
+    }
+    if (input.audience === NotificationAudience.SPECIFIC && !input.recipientId) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'recipientId is required when audience is SPECIFIC',
       );
     }
     return this.notifyUser({
@@ -63,6 +71,14 @@ export class NotificationsService {
       title: input.title,
       body: input.body,
       type: 'BROADCAST',
+      merchantId:
+        input.audience === NotificationAudience.SPECIFIC
+          ? input.recipientId ?? null
+          : null,
+      userId:
+        input.audience === NotificationAudience.SPECIFIC
+          ? input.recipientId ?? null
+          : null,
     });
   }
 
@@ -146,6 +162,13 @@ export class NotificationsService {
     }
     if (row.audience === NotificationAudience.ALL) {
       return true;
+    }
+    if (row.audience === NotificationAudience.SPECIFIC) {
+      return (
+        row.userId === user.id ||
+        row.merchantId === user.merchantId ||
+        row.organizationId === user.organizationId
+      );
     }
     if (row.audience === NotificationAudience.ADMIN) {
       return user.role === UserRole.ADMIN || user.role === UserRole.OPS;
