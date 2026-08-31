@@ -55,8 +55,13 @@ export class SetBankDto {
 }
 
 export class SetDefaultBankDto {
-  @IsIn(BANKS)
-  bankCode: string;
+  @IsOptional()
+  @IsString()
+  bankCode?: string;
+
+  @IsOptional()
+  @IsString()
+  railId?: string;
 }
 
 export class UpdateBankConnectorDto {

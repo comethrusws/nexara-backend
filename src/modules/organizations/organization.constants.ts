@@ -77,3 +77,68 @@ export function railFeature(paymentMode: string): FeatureCode {
       return Features.PAYOUT;
   }
 }
+
+export const BANK_RAIL_METADATA: Record<
+  string,
+  {
+    railId: string;
+    provider: string;
+    priority: number;
+    supportedModes: string[];
+    avgClearingTime: string;
+    uptimePercent: number;
+    successRate: number;
+    dailyCapacity: string;
+  }
+> = {
+  MOCK: {
+    railId: 'YES_BANK_NODAL',
+    provider: 'Mock Bank (dev)',
+    priority: 1,
+    supportedModes: ['IMPS', 'NEFT', 'RTGS', 'UPI'],
+    avgClearingTime: '< 2s',
+    uptimePercent: 99.99,
+    successRate: 99.98,
+    dailyCapacity: '₹500,000,000',
+  },
+  YESBANK: {
+    railId: 'YES_BANK_NODAL',
+    provider: 'YES Bank',
+    priority: 1,
+    supportedModes: ['IMPS', 'NEFT', 'RTGS', 'UPI'],
+    avgClearingTime: '< 2.4s',
+    uptimePercent: 99.95,
+    successRate: 99.9,
+    dailyCapacity: '₹500,000,000',
+  },
+  ICICI: {
+    railId: 'ICICI_CORPORATE',
+    provider: 'ICICI Bank',
+    priority: 2,
+    supportedModes: ['IMPS', 'NEFT', 'RTGS'],
+    avgClearingTime: '< 3s',
+    uptimePercent: 99.9,
+    successRate: 99.5,
+    dailyCapacity: '₹300,000,000',
+  },
+  HDFC: {
+    railId: 'HDFC_SMARTHUB',
+    provider: 'HDFC Bank',
+    priority: 3,
+    supportedModes: ['IMPS', 'NEFT', 'RTGS', 'UPI'],
+    avgClearingTime: '< 3.5s',
+    uptimePercent: 99.85,
+    successRate: 99.4,
+    dailyCapacity: '₹250,000,000',
+  },
+  KOTAK: {
+    railId: 'AXIS_DIRECT',
+    provider: 'Kotak Mahindra Bank',
+    priority: 4,
+    supportedModes: ['IMPS', 'NEFT', 'RTGS'],
+    avgClearingTime: '< 4s',
+    uptimePercent: 99.8,
+    successRate: 99.2,
+    dailyCapacity: '₹200,000,000',
+  },
+};

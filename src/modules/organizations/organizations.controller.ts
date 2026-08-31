@@ -35,12 +35,13 @@ export class OrganizationsController {
 
   @Get('banks')
   listBanks() {
-    return this.organizations.listBanks();
+    return this.organizations.listBanksEnriched();
   }
 
   @Put('banks/default')
   setDefaultBank(@Body() body: SetDefaultBankDto) {
-    return this.organizations.setDefaultBank(body.bankCode);
+    const code = body.bankCode ?? body.railId ?? '';
+    return this.organizations.setDefaultBank(code);
   }
 
   @Put('banks/:code')

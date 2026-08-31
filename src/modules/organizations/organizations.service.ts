@@ -9,6 +9,7 @@ import { Organization } from './entities/organization.entity';
 import {
   ALLOWED_CHILDREN,
   BANK_CATALOG,
+  BANK_RAIL_METADATA,
   BankCode,
   BankCodes,
   FEATURE_CATALOG,
@@ -209,14 +210,50 @@ export class OrganizationsService implements OnModuleInit {
     return rows;
   }
 
+  async listBanksEnriched() {
+    const rows = await this.listBanks();
+    return rows.map((row) => this.enrichBank(row));
+  }
+
+  private enrichBank(row: BankConnector) {
+    const meta = BANK_RAIL_METADATA[row.code] ?? BANK_RAIL_METADATA.MOCK;
+    return {
+      id: meta.railId,
+      railId: meta.railId,
+      code: row.code,
+      name: row.name,
+      provider: meta.provider,
+      status: row.enabled ? 'ACTIVE' : 'STANDBY',
+      priority: meta.priority,
+      supportedModes: meta.supportedModes,
+      avgClearingTime: meta.avgClearingTime,
+      uptimePercent: meta.uptimePercent,
+      successRate: meta.successRate,
+      dailyCapacity: meta.dailyCapacity,
+      enabled: row.enabled,
+      isDefault: row.isDefault,
+    };
+  }
+
   async setDefaultBank(bankCode: string) {
-    await this.requireEnabledBank(bankCode);
+    const resolved = this.normalizeBankRailId(bankCode);
+    await this.requireEnabledBank(resolved);
     const rows = await this.banks.find();
     for (const row of rows) {
-      row.isDefault = row.code === bankCode;
+      row.isDefault = row.code === resolved;
     }
     await this.banks.save(rows);
-    return this.listBanks();
+    return this.listBanksEnriched();
+  }
+
+  normalizeBankRailId(input: string): string {
+    const normalized = input.toUpperCase();
+    for (const [code, meta] of Object.entries(BANK_RAIL_METADATA)) {
+      if (meta.railId === input || meta.railId === normalized || code === normalized) {
+        return code;
+      }
+    }
+    return normalized;
   }
 
   async setBankEnabled(code: string, enabled: boolean) {
@@ -320,9 +357,10 @@ export class OrganizationsService implements OnModuleInit {
     contactPerson?: string;
     mobile?: string;
     email?: string;
+    organizationType?: OrganizationType;
   }): Promise<Organization> {
     const created = await this.create({
-      type: OrganizationType.MERCHANT,
+      type: input.organizationType ?? OrganizationType.MERCHANT,
       parentId: input.parentId,
       name: input.name,
       contactPerson: input.contactPerson,
