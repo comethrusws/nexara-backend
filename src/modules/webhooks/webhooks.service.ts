@@ -63,7 +63,39 @@ export class WebhooksService {
       order: { createdAt: 'DESC' },
       take: 50,
     });
-    return rows;
+    return rows.map((row) => this.toDeliveryView(row));
+  }
+
+  async listAll() {
+    const rows = await this.hooks.find({ order: { createdAt: 'DESC' }, take: 200 });
+    return rows.map((row) => this.toView(row));
+  }
+
+  async listAllDeliveries() {
+    const rows = await this.deliveries.find({
+      order: { createdAt: 'DESC' },
+      take: 200,
+    });
+    return rows.map((row) => this.toDeliveryView(row));
+  }
+
+  async sendTest(webhookId: string) {
+    const hook = await this.hooks.findOne({ where: { id: webhookId } });
+    if (!hook) {
+      throw new NexaraError(
+        ErrorCodes.WEBHOOK_NOT_FOUND,
+        'Webhook was not found',
+        404,
+      );
+    }
+    const payload = {
+      id: 'test_payout_01',
+      merchantReference: 'TEST-REF',
+      amount: '100.00',
+      status: 'SUCCESS',
+    };
+    await this.emit(hook.merchantId, 'payout.success', payload);
+    return { success: true, message: 'Test webhook dispatched' };
   }
 
   async emit(
@@ -132,6 +164,19 @@ export class WebhooksService {
       status: hook.status,
       createdAt: hook.createdAt,
       lastDeliveryAt: hook.lastDeliveryAt,
+    };
+  }
+
+  private toDeliveryView(row: WebhookDelivery) {
+    return {
+      id: row.id,
+      webhookId: row.webhookId,
+      event: row.event,
+      payloadSummary: row.payloadSummary,
+      statusCode: row.statusCode ?? 0,
+      timestamp: row.createdAt,
+      attempts: row.attempts,
+      status: row.status,
     };
   }
 }
