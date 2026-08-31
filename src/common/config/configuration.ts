@@ -53,6 +53,22 @@ export default () => ({
       clientSecret: process.env.YESBANK_CLIENT_SECRET ?? '',
     },
   },
+  storage: {
+    driver: (process.env.STORAGE_DRIVER ?? 'local').toLowerCase(),
+    s3: {
+      region: process.env.AWS_REGION ?? process.env.S3_REGION ?? 'ap-south-1',
+      bucket: process.env.S3_BUCKET ?? '',
+      accessKeyId:
+        process.env.AWS_ACCESS_KEY_ID ?? process.env.S3_ACCESS_KEY_ID ?? '',
+      secretAccessKey:
+        process.env.AWS_SECRET_ACCESS_KEY ??
+        process.env.S3_SECRET_ACCESS_KEY ??
+        '',
+      endpoint: process.env.S3_ENDPOINT ?? '',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      publicBaseUrl: process.env.S3_PUBLIC_BASE_URL ?? '',
+    },
+  },
   auth: {
     jwtSecret: process.env.JWT_SECRET ?? 'nexara-dev-jwt-secret',
     adminEmail: process.env.AUTH_ADMIN_EMAIL ?? 'admin@nexara.com',
@@ -61,5 +77,8 @@ export default () => ({
     merchantDefaultPassword:
       process.env.AUTH_MERCHANT_DEFAULT_PASSWORD ?? 'ChangeMe#2026',
     otpCode: process.env.AUTH_OTP_CODE ?? '123456',
+  },
+  ifsc: {
+    lookupUrl: process.env.BANK_IFSC_LOOKUP_URL ?? 'https://ifsc.razorpay.com',
   },
 });
