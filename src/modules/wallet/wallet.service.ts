@@ -161,12 +161,26 @@ export class WalletService {
 
   async getActivity(merchantId: string) {
     const lines = await this.getStatement(merchantId);
-    return lines.map((line) => this.toActivity(line));
+    return lines.map((line) => this.toActivity(merchantId, line));
   }
 
-  async getStatement(merchantId: string): Promise<StatementLine[]> {
+  async getStatement(
+    merchantId: string,
+    filters?: { from?: string; to?: string },
+  ): Promise<StatementLine[]> {
     const mapping = await this.getRequiredMapping(merchantId);
-    return this.fineract.getStatement(mapping.fineractSavingsAccountId);
+    const lines = await this.fineract.getStatement(
+      mapping.fineractSavingsAccountId,
+    );
+    if (!filters?.from && !filters?.to) {
+      return lines;
+    }
+    const fromMs = filters.from ? Date.parse(filters.from) : 0;
+    const toMs = filters.to ? Date.parse(filters.to) : Number.MAX_SAFE_INTEGER;
+    return lines.filter((line) => {
+      const ts = Date.parse(line.date);
+      return ts >= fromMs && ts <= toMs;
+    });
   }
 
   async getRequiredMapping(merchantId: string): Promise<WalletMapping> {
@@ -198,7 +212,7 @@ export class WalletService {
     };
   }
 
-  private toActivity(line: StatementLine) {
+  private toActivity(merchantId: string, line: StatementLine) {
     let type: 'CREDIT' | 'DEBIT' = 'DEBIT';
     let status: 'COMPLETED' | 'PENDING' | 'REVERSED' = 'COMPLETED';
     if (line.type === 'CREDIT' || line.type === 'RELEASE') {
@@ -210,10 +224,14 @@ export class WalletService {
     if (line.reversed) {
       status = 'REVERSED';
     }
+    const note = line.note ?? '';
+    const payoutMatch = /Payout\s+([A-Za-z0-9_-]+)/i.exec(note);
     return {
       id: String(line.transactionId),
+      merchantId,
+      payoutId: payoutMatch?.[1] ?? undefined,
       date: line.date,
-      description: line.note ?? line.type,
+      description: note || line.type,
       reference: line.receiptNumber ?? String(line.transactionId),
       type,
       amount: line.amount,

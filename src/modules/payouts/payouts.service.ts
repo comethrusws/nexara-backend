@@ -84,6 +84,7 @@ export class PayoutsService {
       feeType: merchant.feeType,
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
+      feeTiersJson: merchant.feeTiersJson,
     });
 
     await this.assertDailyLimit(merchant.id, merchant.dailyPayoutLimit, charges.payoutAmount);
@@ -186,6 +187,22 @@ export class PayoutsService {
 
   async enquire(id: string) {
     const payout = await this.requirePayout(id);
+    return this.runEnquire(payout);
+  }
+
+  async enquireForMerchant(id: string, merchantId: string) {
+    const payout = await this.requirePayout(id);
+    if (payout.merchantId !== merchantId) {
+      throw new NexaraError(
+        ErrorCodes.PAYOUT_NOT_FOUND,
+        'Payout was not found',
+        404,
+      );
+    }
+    return this.runEnquire(payout);
+  }
+
+  private async runEnquire(payout: Payout) {
     if (!payout.bankReference) {
       throw new NexaraError(
         ErrorCodes.TRANSACTION_PENDING,
@@ -363,10 +380,13 @@ export class PayoutsService {
       id: payout.id,
       merchantId: payout.merchantId,
       merchantReference: payout.merchantReference,
+      merchantRef: payout.merchantReference,
       amount: payout.amount,
       fee: payout.fee,
       gst: payout.gst,
+      tax: payout.gst,
       reserved: payout.reserved,
+      totalReserved: payout.reserved,
       status: payout.status,
       paymentMode: payout.paymentMode,
       beneficiary: {
@@ -377,6 +397,7 @@ export class PayoutsService {
       },
       bankCode: payout.bankCode,
       bankReference: payout.bankReference,
+      bankRef: payout.bankReference,
       failureReason: payout.failureReason,
       createdAt: payout.createdAt,
       updatedAt: payout.updatedAt,

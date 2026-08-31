@@ -2,6 +2,8 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { UserRole } from '../auth/auth.constants';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
+import { BeneficiariesService } from '../beneficiaries/beneficiaries.service';
 import { CreatePayoutDto } from './dto/payout.dto';
 import { PayoutsService } from './payouts.service';
 
@@ -10,11 +12,31 @@ import { PayoutsService } from './payouts.service';
 @ApiTags('Ops — Payouts')
 @ApiBearerAuth('JWT')
 export class PayoutsController {
-  constructor(private readonly payouts: PayoutsService) {}
+  constructor(
+    private readonly payouts: PayoutsService,
+    private readonly beneficiaries: BeneficiariesService,
+  ) {}
 
   @Post()
-  create(@Body() body: CreatePayoutDto) {
-    return this.payouts.create(body);
+  async create(@Body() body: CreatePayoutDto) {
+    const beneficiary = body.beneficiaryId
+      ? await this.beneficiaries.requireForPayout(
+          body.merchantId,
+          body.beneficiaryId,
+        )
+      : body.beneficiary;
+    if (!beneficiary) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'beneficiary or beneficiaryId is required',
+      );
+    }
+    return this.payouts.create({
+      merchantId: body.merchantId,
+      merchantReference: body.merchantReference,
+      amount: body.amount,
+      beneficiary,
+    });
   }
 
   @Get()
@@ -22,7 +44,10 @@ export class PayoutsController {
     @Query('merchantId') merchantId?: string,
     @Query('status') status?: string,
   ) {
-    return this.payouts.list({ merchantId, status });
+    return this.payouts.list({
+      merchantId,
+      status: status && status !== 'ALL' ? status : undefined,
+    });
   }
 
   @Get(':id')

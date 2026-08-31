@@ -13,12 +13,19 @@ export function calculatePayoutCharges(input: {
   feeType: FeeType;
   feeValue: string;
   gstPercent: string;
+  feeTiersJson?: string | null;
 }): PayoutCharges {
   const payoutCents = toCents(input.payoutAmount);
-  const feeCents =
-    input.feeType === FeeType.PERCENTAGE
-      ? Math.round((payoutCents * toCents(input.feeValue)) / 10000)
-      : toCents(input.feeValue);
+  let feeCents: number;
+
+  if (input.feeType === FeeType.PERCENTAGE) {
+    feeCents = Math.round((payoutCents * toCents(input.feeValue)) / 10000);
+  } else if (input.feeType === FeeType.TIERED) {
+    feeCents = resolveTieredFeeCents(input.feeTiersJson, input.feeValue);
+  } else {
+    feeCents = toCents(input.feeValue);
+  }
+
   const gstCents = Math.round((feeCents * toCents(input.gstPercent)) / 10000);
   const fee = fromCents(feeCents);
   const gst = fromCents(gstCents);
@@ -29,4 +36,21 @@ export function calculatePayoutCharges(input: {
     gst,
     reserved: addAmounts(fromCents(payoutCents), fee, gst),
   };
+}
+
+function resolveTieredFeeCents(
+  feeTiersJson: string | null | undefined,
+  fallbackFeeValue: string,
+): number {
+  if (feeTiersJson) {
+    try {
+      const tiers = JSON.parse(feeTiersJson) as Array<{ feePerTx?: number }>;
+      if (Array.isArray(tiers) && tiers.length > 0 && tiers[0].feePerTx != null) {
+        return toCents(String(tiers[0].feePerTx));
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return toCents(fallbackFeeValue);
 }
