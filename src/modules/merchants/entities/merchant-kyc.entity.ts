@@ -93,6 +93,9 @@ export class MerchantKyc {
   @Column({ name: 'selfie_path', type: 'varchar', length: 500, nullable: true })
   selfiePath: string | null;
 
+  @Column({ name: 'shop_type', type: 'varchar', length: 128, nullable: true })
+  shopType: string | null;
+
   @Column({ name: 'latitude', type: 'varchar', length: 32, nullable: true })
   latitude: string | null;
 

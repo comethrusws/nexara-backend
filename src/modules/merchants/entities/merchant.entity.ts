@@ -73,6 +73,12 @@ export class Merchant {
   @Column({ name: 'gst_percent', type: 'varchar', length: 10, default: '18.00' })
   gstPercent: string;
 
+  @Column({ name: 'fee_tiers_json', type: 'text', nullable: true })
+  feeTiersJson: string | null;
+
+  @Column({ name: 'enabled_services_json', type: 'text', nullable: true })
+  enabledServicesJson: string | null;
+
   @Column({ name: 'organization_id', type: 'uuid', nullable: true })
   organizationId: string | null;
 

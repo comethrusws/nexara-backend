@@ -14,6 +14,7 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiConsumes,
+  ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
@@ -21,9 +22,11 @@ import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { AuthUser } from '../auth/auth.constants';
+import { UsersService } from '../auth/users.service';
 import {
   CreateMerchantDto,
   OnboardingExtrasDto,
+  SuspendMerchantDto,
   UpdateMerchantDto,
   VerifyAadhaarDto,
   VerifyPanDto,
@@ -35,7 +38,10 @@ import { MerchantsService } from './merchants.service';
 @ApiTags('Ops — Merchants')
 @ApiBearerAuth('JWT')
 export class MerchantsController {
-  constructor(private readonly merchants: MerchantsService) {}
+  constructor(
+    private readonly merchants: MerchantsService,
+    private readonly users: UsersService,
+  ) {}
 
   @Post()
   create(@Body() body: CreateMerchantDto) {
@@ -132,7 +138,26 @@ export class MerchantsController {
   }
 
   @Post(':id/suspend')
-  suspend(@Param('id') id: string) {
-    return this.merchants.suspend(id);
+  suspend(
+    @Param('id') id: string,
+    @Body() body: SuspendMerchantDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.merchants.suspend(id, body.reason, user.email);
+  }
+
+  @Post(':id/mpin/reset')
+  @ApiOperation({
+    summary: 'Clear merchant transaction PIN (ops)',
+    description:
+      'Removes the stored MPIN so the merchant must set a new one via OTP reset or POST /me/mpin.',
+  })
+  resetMpin(@Param('id') id: string) {
+    return this.users.clearMpinForMerchant(id);
+  }
+
+  @Get(':id/kyc/presigned-urls')
+  kycPresignedUrls(@Param('id') id: string) {
+    return this.merchants.getKycPresignedUrls(id);
   }
 }

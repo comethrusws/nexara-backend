@@ -1,14 +1,17 @@
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ErrorCodes } from '../../common/errors/nexara-error';
 import { KYC_PORT } from '../../integrations/kyc/kyc.types';
+import { OBJECT_STORAGE } from '../../integrations/storage/storage.types';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
-import { MerchantKyc } from './entities/merchant-kyc.entity';
+import { Payout } from '../payouts/entities/payout.entity';
 import { Merchant } from './entities/merchant.entity';
+import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { MerchantStatus } from './merchant.enums';
 import { MerchantsService } from './merchants.service';
 
@@ -70,7 +73,16 @@ describe('MerchantsService', () => {
         MerchantsService,
         { provide: getRepositoryToken(Merchant), useValue: merchants },
         { provide: getRepositoryToken(MerchantKyc), useValue: kycRecords },
+        { provide: getRepositoryToken(Payout), useValue: { find: jest.fn().mockResolvedValue([]) } },
         { provide: KYC_PORT, useValue: kyc },
+        {
+          provide: OBJECT_STORAGE,
+          useValue: { putObject: jest.fn(async ({ key }: { key: string }) => ({ key, url: `s3://test/${key}` })) },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn((key: string) => (key === 'kyc.provider' ? 'mock' : undefined)) },
+        },
         { provide: WalletService, useValue: wallets },
         { provide: OrganizationsService, useValue: organizations },
         { provide: UsersService, useValue: { createMerchantUser: jest.fn() } },

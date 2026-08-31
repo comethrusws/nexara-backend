@@ -1,17 +1,25 @@
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { mkdir, writeFile } from 'fs/promises';
-import { join } from 'path';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, In, Not, Repository } from 'typeorm';
+import { Payout, PayoutStatus } from '../payouts/entities/payout.entity';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { KYC_PORT, type KycPort } from '../../integrations/kyc/kyc.types';
+import {
+  OBJECT_STORAGE,
+  type ObjectStoragePort,
+} from '../../integrations/storage/storage.types';
 import { AuditService } from '../audit/audit.service';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Features } from '../organizations/organization.constants';
+import { Features, OrganizationType } from '../organizations/organization.constants';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
-import { CreateMerchantDto, UpdateMerchantDto } from './dto/merchant.dto';
+import {
+  CreateMerchantDto,
+  PublicOnboardingDto,
+  UpdateMerchantDto,
+} from './dto/merchant.dto';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
 import { FeeType, MerchantStatus, MerchantTier } from './merchant.enums';
@@ -23,7 +31,11 @@ export class MerchantsService implements OnModuleInit {
     private readonly merchants: Repository<Merchant>,
     @InjectRepository(MerchantKyc)
     private readonly kycRecords: Repository<MerchantKyc>,
+    @InjectRepository(Payout)
+    private readonly payouts: Repository<Payout>,
     @Inject(KYC_PORT) private readonly kyc: KycPort,
+    @Inject(OBJECT_STORAGE) private readonly storage: ObjectStoragePort,
+    private readonly config: ConfigService,
     private readonly wallets: WalletService,
     private readonly organizations: OrganizationsService,
     private readonly users: UsersService,
@@ -58,6 +70,7 @@ export class MerchantsService implements OnModuleInit {
       contactPerson: input.contactPerson,
       mobile: input.mobile,
       email: input.email,
+      organizationType: this.mapEntityType(input.entityType),
     });
     const merchant = this.merchants.create({
       businessName: input.businessName,
@@ -66,12 +79,20 @@ export class MerchantsService implements OnModuleInit {
       email: input.email,
       address: input.address,
       status: MerchantStatus.CREATED,
-      dailyPayoutLimit: input.dailyPayoutLimit,
-      perPayoutLimit: input.perPayoutLimit ?? null,
+      dailyPayoutLimit: input.dailyPayoutLimit ?? '100000.00',
+      perPayoutLimit: input.perPayoutLimit ?? '20000.00',
       tier: input.tier ?? MerchantTier.SILVER,
       feeType: input.feeType ?? FeeType.FIXED,
       feeValue: input.feeValue ?? '10.00',
       gstPercent: input.gstPercent ?? '18.00',
+      enabledServicesJson: JSON.stringify(
+        input.services ?? {
+          payouts: true,
+          bbpsBills: true,
+          licInsurance: true,
+          loanEmi: true,
+        },
+      ),
       organizationId: org.id,
     });
     const saved = await this.merchants.save(merchant);
@@ -90,6 +111,7 @@ export class MerchantsService implements OnModuleInit {
       merchantId: saved.id,
       organizationId: saved.organizationId,
       password: input.password,
+      mpin: input.mpin,
     });
     await this.audit.record({
       actorEmail: 'system',
@@ -120,8 +142,15 @@ export class MerchantsService implements OnModuleInit {
           );
         })
       : rows;
-    const filtered = filters?.status
-      ? searched.filter((row) => row.status === filters.status)
+    const normalizedStatus = this.normalizeStatusFilter(filters?.status);
+    const filtered = normalizedStatus
+      ? searched.filter((row) => {
+          const aliases = this.statusAliases(row.status);
+          return (
+            row.status === normalizedStatus ||
+            aliases.includes(filters!.status!)
+          );
+        })
       : searched;
     return Promise.all(filtered.map((row) => this.toView(row)));
   }
@@ -146,6 +175,13 @@ export class MerchantsService implements OnModuleInit {
     }
     if (input.gstPercent) {
       merchant.gstPercent = input.gstPercent;
+    }
+    if (input.percentFee) {
+      merchant.feeType = FeeType.PERCENTAGE;
+      merchant.feeValue = input.percentFee;
+    }
+    if (input.services) {
+      merchant.enabledServicesJson = JSON.stringify(input.services);
     }
     if (input.tier) {
       merchant.tier = input.tier;
@@ -294,7 +330,7 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async suspend(id: string) {
+  async suspend(id: string, reason?: string, actorEmail = 'ops') {
     const merchant = await this.requireMerchant(id);
     if (merchant.status !== MerchantStatus.ACTIVE) {
       throw new NexaraError(
@@ -305,7 +341,127 @@ export class MerchantsService implements OnModuleInit {
     }
     merchant.status = MerchantStatus.SUSPENDED;
     await this.merchants.save(merchant);
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'ADMIN',
+      action: 'MERCHANT_SUSPENDED',
+      merchantId: merchant.id,
+      details: reason ?? 'Merchant suspended',
+    });
     return this.toView(merchant);
+  }
+
+  async getKycPresignedUrls(id: string) {
+    const merchant = await this.requireMerchant(id);
+    const paths = {
+      aadhaarFront: merchant.kyc.aadhaarFrontPath,
+      aadhaarBack: merchant.kyc.aadhaarBackPath,
+      pan: merchant.kyc.panImagePath,
+      selfie: merchant.kyc.selfiePath,
+    };
+    const result: Record<string, string | null> = {};
+    for (const [label, stored] of Object.entries(paths)) {
+      result[label] = stored
+        ? await this.presignStoredObject(stored)
+        : null;
+    }
+    return result;
+  }
+
+  private async presignStoredObject(stored: string): Promise<string> {
+    if (
+      stored.startsWith('http://') ||
+      stored.startsWith('https://') ||
+      stored.startsWith('file://')
+    ) {
+      if (!this.storage.getPresignedUrl) {
+        return stored;
+      }
+    }
+    const key = this.extractStorageKey(stored);
+    if (this.storage.getPresignedUrl) {
+      return this.storage.getPresignedUrl(key);
+    }
+    return stored;
+  }
+
+  private extractStorageKey(stored: string): string {
+    if (stored.startsWith('s3://')) {
+      const parts = stored.replace('s3://', '').split('/');
+      parts.shift();
+      return parts.join('/');
+    }
+    const marker = '/kyc/';
+    const idx = stored.indexOf(marker);
+    if (idx >= 0) {
+      return stored.slice(idx + 1);
+    }
+    return stored;
+  }
+
+  private mapEntityType(entityType?: string): OrganizationType {
+    switch (entityType) {
+      case 'SUPER_DISTRIBUTOR':
+        return OrganizationType.SUPER_DISTRIBUTOR;
+      case 'DISTRIBUTOR':
+        return OrganizationType.DISTRIBUTOR;
+      default:
+        return OrganizationType.MERCHANT;
+    }
+  }
+
+  private normalizeStatusFilter(status?: string): string | undefined {
+    if (!status || status === 'ALL') {
+      return undefined;
+    }
+    const aliases: Record<string, MerchantStatus> = {
+      PENDING_KYC: MerchantStatus.KYC_PENDING,
+      UNDER_REVIEW: MerchantStatus.KYC_PENDING,
+      PENDING: MerchantStatus.CREATED,
+    };
+    return aliases[status] ?? status;
+  }
+
+  private statusAliases(status: MerchantStatus): string[] {
+    if (status === MerchantStatus.KYC_PENDING) {
+      return ['KYC_PENDING', 'PENDING_KYC', 'UNDER_REVIEW'];
+    }
+    if (status === MerchantStatus.CREATED) {
+      return ['CREATED', 'PENDING'];
+    }
+    return [status];
+  }
+
+  private parseEnabledServices(json: string | null) {
+    const defaults = {
+      payouts: true,
+      bbpsBills: true,
+      licInsurance: true,
+      loanEmi: true,
+    };
+    if (!json) {
+      return defaults;
+    }
+    try {
+      return { ...defaults, ...JSON.parse(json) };
+    } catch {
+      return defaults;
+    }
+  }
+
+  private async currentDailySpent(merchantId: string): Promise<string> {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const rows = await this.payouts.find({
+      where: {
+        merchantId,
+        status: Not(In([PayoutStatus.FAILED])),
+      },
+    });
+    const total = rows
+      .filter((row) => row.createdAt >= start)
+      .reduce((sum, row) => sum + parseFloat(row.amount), 0);
+    return total.toFixed(2);
   }
 
   async requireActive(id: string): Promise<Merchant> {
@@ -326,21 +482,76 @@ export class MerchantsService implements OnModuleInit {
     return this.requireMerchant(id);
   }
 
+  async registerSelfServe(input: PublicOnboardingDto) {
+    const mobile = input.mobile.replace(/\D/g, '').slice(-10);
+    const merchant = await this.create({
+      businessName: input.businessName,
+      contactPerson: input.contactPerson,
+      mobile,
+      email: input.email,
+      address: input.address,
+      dailyPayoutLimit: input.dailyPayoutLimit ?? '100000.00',
+      parentOrganizationId: input.parentOrganizationId,
+      password: input.password,
+      mpin: input.mpin,
+    });
+
+    if (input.pan) {
+      await this.verifyPan(merchant.id, input.pan, input.contactPerson);
+    }
+    if (input.aadhaar) {
+      await this.verifyAadhaar(merchant.id, input.aadhaar);
+    }
+
+    const refreshed = await this.requireMerchant(merchant.id);
+    if (input.latitude) {
+      refreshed.kyc.latitude = input.latitude;
+    }
+    if (input.longitude) {
+      refreshed.kyc.longitude = input.longitude;
+    }
+    if (input.shopType) {
+      refreshed.kyc.shopType = input.shopType;
+    }
+    if (input.agreementAccepted) {
+      refreshed.kyc.agreementSignedAt = new Date();
+    }
+
+    if (this.looksLikeImagePayload(input.selfieBase64)) {
+      const decoded = this.decodeBase64Image(
+        input.selfieBase64!,
+        input.selfieContentType,
+      );
+      const stored = await this.storage.putObject({
+        key: `kyc/${refreshed.id}/selfie${decoded.extension}`,
+        body: decoded.buffer,
+        contentType: decoded.contentType,
+      });
+      refreshed.kyc.selfiePath = stored.url;
+    }
+
+    await this.applyMockDocumentMatchIfReady(refreshed);
+    await this.kycRecords.save(refreshed.kyc);
+    refreshed.status = MerchantStatus.KYC_PENDING;
+    await this.merchants.save(refreshed);
+    return this.toView(refreshed);
+  }
+
   async storeKycFiles(
     id: string,
     files: {
-      aadhaarFront?: { originalname: string; buffer: Buffer };
-      aadhaarBack?: { originalname: string; buffer: Buffer };
-      pan?: { originalname: string; buffer: Buffer };
-      selfie?: { originalname: string; buffer: Buffer };
+      aadhaarFront?: { originalname: string; buffer: Buffer; mimetype?: string };
+      aadhaarBack?: { originalname: string; buffer: Buffer; mimetype?: string };
+      pan?: { originalname: string; buffer: Buffer; mimetype?: string };
+      selfie?: { originalname: string; buffer: Buffer; mimetype?: string };
     },
   ) {
     const merchant = await this.requireMerchant(id);
     this.assertKycAllowed(merchant);
-    const dir = join(process.cwd(), 'uploads', 'kyc', merchant.id);
-    await mkdir(dir, { recursive: true });
     const save = async (
-      file: { originalname: string; buffer: Buffer } | undefined,
+      file:
+        | { originalname: string; buffer: Buffer; mimetype?: string }
+        | undefined,
       name: string,
     ) => {
       if (!file) {
@@ -349,15 +560,24 @@ export class MerchantsService implements OnModuleInit {
       const ext = file.originalname.includes('.')
         ? file.originalname.slice(file.originalname.lastIndexOf('.'))
         : '.bin';
-      const path = join(dir, `${name}${ext}`);
-      await writeFile(path, file.buffer);
-      return path;
+      const stored = await this.storage.putObject({
+        key: `kyc/${merchant.id}/${name}${ext}`,
+        body: file.buffer,
+        contentType: file.mimetype ?? 'application/octet-stream',
+      });
+      return stored.url;
     };
     if (files.aadhaarFront) {
-      merchant.kyc.aadhaarFrontPath = await save(files.aadhaarFront, 'aadhaar-front');
+      merchant.kyc.aadhaarFrontPath = await save(
+        files.aadhaarFront,
+        'aadhaar-front',
+      );
     }
     if (files.aadhaarBack) {
-      merchant.kyc.aadhaarBackPath = await save(files.aadhaarBack, 'aadhaar-back');
+      merchant.kyc.aadhaarBackPath = await save(
+        files.aadhaarBack,
+        'aadhaar-back',
+      );
     }
     if (files.pan) {
       merchant.kyc.panImagePath = await save(files.pan, 'pan');
@@ -366,6 +586,7 @@ export class MerchantsService implements OnModuleInit {
       merchant.kyc.selfiePath = await save(files.selfie, 'selfie');
     }
     await this.refreshDocumentMatch(merchant);
+    await this.applyMockDocumentMatchIfReady(merchant);
     await this.kycRecords.save(merchant.kyc);
     merchant.status = MerchantStatus.KYC_PENDING;
     await this.merchants.save(merchant);
@@ -377,6 +598,7 @@ export class MerchantsService implements OnModuleInit {
     input: {
       latitude?: string;
       longitude?: string;
+      shopType?: string;
       agreementAccepted?: boolean;
     },
   ) {
@@ -386,6 +608,9 @@ export class MerchantsService implements OnModuleInit {
     }
     if (input.longitude) {
       merchant.kyc.longitude = input.longitude;
+    }
+    if (input.shopType) {
+      merchant.kyc.shopType = input.shopType;
     }
     if (input.agreementAccepted) {
       merchant.kyc.agreementSignedAt = new Date();
@@ -407,6 +632,63 @@ export class MerchantsService implements OnModuleInit {
         ? 'MISMATCH'
         : 'MATCHED';
     }
+  }
+
+  /**
+   * Without a live DigiLocker/liveness provider, mock mode treats verified
+   * PAN+Aadhaar (and optional selfie) as document-matched so ops can activate.
+   */
+  private async applyMockDocumentMatchIfReady(
+    merchant: Merchant,
+  ): Promise<void> {
+    const provider = (
+      this.config.get<string>('kyc.provider') ?? 'mock'
+    ).toLowerCase();
+    if (provider !== 'mock') {
+      return;
+    }
+    if (
+      merchant.kyc.aadhaarStatus === 'VERIFIED' &&
+      merchant.kyc.panStatus === 'VERIFIED'
+    ) {
+      merchant.kyc.aadhaarImageMatch = 'MATCHED';
+      merchant.kyc.panImageMatch = 'MATCHED';
+    }
+  }
+
+  private looksLikeImagePayload(value?: string): boolean {
+    if (!value) {
+      return false;
+    }
+    const trimmed = value.trim();
+    return (
+      trimmed.startsWith('data:image/') ||
+      (trimmed.length > 256 && !trimmed.includes(' ') && !trimmed.includes('.'))
+    );
+  }
+
+  private decodeBase64Image(
+    value: string,
+    contentTypeHint?: string,
+  ): { buffer: Buffer; contentType: string; extension: string } {
+    const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(value.trim());
+    const contentType =
+      dataUrl?.[1] ?? contentTypeHint ?? 'image/jpeg';
+    const base64 = dataUrl?.[2] ?? value.replace(/^base64,/i, '').trim();
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'selfieBase64 is empty or invalid',
+      );
+    }
+    const extension =
+      contentType.includes('png')
+        ? '.png'
+        : contentType.includes('webp')
+          ? '.webp'
+          : '.jpg';
+    return { buffer, contentType, extension };
   }
 
   private requireOrganizationId(merchant: Merchant): string {
@@ -452,6 +734,19 @@ export class MerchantsService implements OnModuleInit {
     const entitlements = merchant.organizationId
       ? await this.organizations.get(merchant.organizationId)
       : null;
+    const entityType =
+      entitlements?.type === 'MERCHANT'
+        ? 'RETAILER'
+        : entitlements?.type ?? 'RETAILER';
+    const dailySpent = await this.currentDailySpent(merchant.id);
+    const enabledServices = this.parseEnabledServices(
+      merchant.enabledServicesJson,
+    );
+    const percentFee =
+      merchant.feeType === FeeType.PERCENTAGE ? merchant.feeValue : '0.00';
+    const fixedFee =
+      merchant.feeType === FeeType.FIXED ? merchant.feeValue : '10.00';
+
     return {
       id: merchant.id,
       businessName: merchant.businessName,
@@ -460,12 +755,30 @@ export class MerchantsService implements OnModuleInit {
       email: merchant.email,
       address: merchant.address,
       status: merchant.status,
+      displayStatus:
+        merchant.status === MerchantStatus.KYC_PENDING
+          ? 'PENDING_KYC'
+          : merchant.status,
+      entityType,
+      parentId: entitlements?.parentId ?? null,
       dailyPayoutLimit: merchant.dailyPayoutLimit,
       perPayoutLimit: merchant.perPayoutLimit,
       tier: merchant.tier,
       feeType: merchant.feeType,
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
+      feeConfig: {
+        feeModel: merchant.feeType,
+        fixedFee: parseFloat(fixedFee),
+        percentFee: parseFloat(percentFee),
+        taxRatePercent: parseFloat(merchant.gstPercent),
+      },
+      limitConfig: {
+        dailyLimit: parseFloat(merchant.dailyPayoutLimit),
+        perTxLimit: parseFloat(merchant.perPayoutLimit ?? '20000'),
+        currentDailySpent: parseFloat(dailySpent),
+      },
+      enabledServices,
       organizationId: merchant.organizationId,
       organization: entitlements,
       kyc: merchant.kyc

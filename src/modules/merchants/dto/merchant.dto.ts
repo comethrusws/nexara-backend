@@ -1,18 +1,55 @@
 import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsEmail,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  ValidateNested,
 } from 'class-validator';
+import { MPIN_PATTERN, MPIN_VALIDATION_MESSAGE } from '../../../common/dto/mpin';
 import { FeeType, MerchantStatus, MerchantTier } from '../merchant.enums';
 
 const AMOUNT = /^\d+(\.\d{1,2})?$/;
 const MOBILE = /^\d{10}$/;
+
+export class MerchantServicesDto {
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  payouts?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  bbpsBills?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  licInsurance?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  loanEmi?: boolean;
+}
+
+export class FeeTierDto {
+  @IsOptional()
+  minTxCount?: number;
+
+  @IsOptional()
+  maxTxCount?: number | null;
+
+  @IsOptional()
+  feePerTx?: number;
+}
 
 export class CreateMerchantDto {
   @IsString()
@@ -34,9 +71,10 @@ export class CreateMerchantDto {
   @IsNotEmpty()
   address: string;
 
+  @IsOptional()
   @IsString()
   @Matches(AMOUNT)
-  dailyPayoutLimit: string;
+  dailyPayoutLimit?: string;
 
   @IsOptional()
   @IsEnum(FeeType)
@@ -57,6 +95,10 @@ export class CreateMerchantDto {
   parentOrganizationId?: string;
 
   @IsOptional()
+  @IsIn(['SUPER_DISTRIBUTOR', 'DISTRIBUTOR', 'RETAILER', 'MERCHANT'])
+  entityType?: string;
+
+  @IsOptional()
   @IsString()
   @Matches(AMOUNT)
   perPayoutLimit?: string;
@@ -66,8 +108,114 @@ export class CreateMerchantDto {
   tier?: MerchantTier;
 
   @IsOptional()
+  @ValidateNested()
+  @Type(() => MerchantServicesDto)
+  services?: MerchantServicesDto;
+
+  @IsOptional()
   @IsString()
   password?: string;
+
+  @ApiPropertyOptional({
+    description: '6-digit transaction PIN for merchant payouts',
+    example: '123456',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
+  mpin?: string;
+}
+
+export class SuspendMerchantDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class PublicOnboardingDto {
+  @ApiProperty({ example: '9876543210' })
+  @IsString()
+  @Matches(MOBILE, { message: 'mobile must be 10 digits' })
+  mobile: string;
+
+  @ApiProperty({ example: 'Sharma General Store' })
+  @IsString()
+  @IsNotEmpty()
+  businessName: string;
+
+  @ApiProperty({ example: 'Rahul Sharma' })
+  @IsString()
+  @IsNotEmpty()
+  contactPerson: string;
+
+  @ApiProperty({ example: 'rahul@example.com' })
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({ example: '12 MG Road, Pune' })
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @ApiPropertyOptional({ description: 'Login password; auto-generated if omitted' })
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @ApiProperty({
+    description: '6-digit transaction PIN required for payouts',
+    example: '123456',
+  })
+  @IsString()
+  @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
+  mpin: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT)
+  dailyPayoutLimit?: string;
+
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/, {
+    message: 'pan must match ABCDE1234F',
+  })
+  pan?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{12}$/, { message: 'aadhaar must be 12 digits' })
+  aadhaar?: string;
+
+  @IsOptional()
+  @IsString()
+  latitude?: string;
+
+  @IsOptional()
+  @IsString()
+  longitude?: string;
+
+  @IsOptional()
+  @IsString()
+  shopType?: string;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  agreementAccepted?: boolean;
+
+  /** Optional data-URL or raw base64 selfie for S3 storage */
+  @IsOptional()
+  @IsString()
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  selfieContentType?: string;
 }
 
 export class VerifyAadhaarDto {
@@ -125,6 +273,16 @@ export class UpdateMerchantDto {
   @IsOptional()
   @IsEnum(MerchantTier)
   tier?: MerchantTier;
+
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT)
+  percentFee?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MerchantServicesDto)
+  services?: MerchantServicesDto;
 }
 
 export class OnboardingExtrasDto {

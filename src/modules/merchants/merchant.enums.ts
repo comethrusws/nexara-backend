@@ -15,4 +15,5 @@ export enum MerchantTier {
 export enum FeeType {
   FIXED = 'FIXED',
   PERCENTAGE = 'PERCENTAGE',
+  TIERED = 'TIERED',
 }
