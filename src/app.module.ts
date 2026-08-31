@@ -4,7 +4,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration from './common/config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuditModule } from './modules/audit/audit.module';
-import { BeneficiariesModule } from './modules/beneficiaries/beneficiaries.module';
+import { BbpsModule } from './modules/bbps/bbps.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { FineractModule } from './integrations/fineract/fineract.module';
 import { HealthModule } from './modules/health/health.module';
 import { MerchantsModule } from './modules/merchants/merchants.module';
@@ -12,6 +14,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { PayoutsModule } from './modules/payouts/payouts.module';
 import { PortalModule } from './modules/portal/portal.module';
+import { BeneficiariesModule } from './modules/beneficiaries/beneficiaries.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
@@ -46,6 +49,9 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     WalletModule,
     MerchantsModule,
     PayoutsModule,
+    DashboardModule,
+    ReconciliationModule,
+    BbpsModule,
     BeneficiariesModule,
     NotificationsModule,
     WebhooksModule,
