@@ -29,6 +29,8 @@ export const ErrorCodes = {
   NOTIFICATION_NOT_FOUND: 'NOTIFICATION_NOT_FOUND',
   PER_TX_LIMIT_EXCEEDED: 'PER_TX_LIMIT_EXCEEDED',
   FUNDING_CHANNEL_UNAVAILABLE: 'FUNDING_CHANNEL_UNAVAILABLE',
+  MPIN_INVALID: 'MPIN_INVALID',
+  MPIN_NOT_SET: 'MPIN_NOT_SET',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

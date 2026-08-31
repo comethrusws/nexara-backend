@@ -9,6 +9,8 @@ import { OtpChallenge } from './entities/otp-challenge.entity';
 import { User } from './entities/user.entity';
 import { UsersService } from './users.service';
 
+export type OtpPurpose = 'LOGIN' | 'ONBOARDING';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -44,19 +46,30 @@ export class AuthService {
     return digits.length > 10 ? digits.slice(-10) : digits;
   }
 
-  async requestOtp(mobile: string) {
+  async requestOtp(mobile: string, purpose: OtpPurpose = 'LOGIN') {
     const cleanMobile = this.normalizeMobile(mobile);
     const user = await this.users.findByMobile(cleanMobile);
-    if (!user || user.status !== 'ACTIVE') {
+
+    if (purpose === 'LOGIN') {
+      if (!user || user.status !== 'ACTIVE') {
+        throw new NexaraError(
+          ErrorCodes.UNAUTHORIZED,
+          'This mobile number is not registered',
+          401,
+        );
+      }
+    } else if (user && user.status === 'ACTIVE') {
       throw new NexaraError(
-        ErrorCodes.UNAUTHORIZED,
-        'This mobile number is not registered',
-        401,
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already registered. Please sign in instead.',
+        409,
       );
     }
+
     const demoCode = this.config.get<string>('auth.otpCode') ?? '123456';
     const challenge = this.otps.create({
       mobile: cleanMobile,
+      purpose,
       codeHash: await bcrypt.hash(demoCode, 8),
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
       consumedAt: null,
@@ -64,13 +77,60 @@ export class AuthService {
     await this.otps.save(challenge);
     return {
       sent: true,
+      purpose,
       demoCode:
         this.config.get<string>('nodeEnv') === 'production' ? undefined : demoCode,
     };
   }
 
-  async verifyOtp(mobile: string, code: string) {
+  async verifyOtp(
+    mobile: string,
+    code: string,
+    purpose: OtpPurpose = 'LOGIN',
+  ) {
     const cleanMobile = this.normalizeMobile(mobile);
+    const row = await this.otps.findOne({
+      where: {
+        mobile: cleanMobile,
+        purpose,
+        consumedAt: IsNull(),
+      },
+      order: { createdAt: 'DESC' },
+    });
+    if (!row || row.consumedAt || row.expiresAt.getTime() < Date.now()) {
+      throw new NexaraError(
+        ErrorCodes.UNAUTHORIZED,
+        'OTP expired or invalid',
+        401,
+      );
+    }
+    const ok = await bcrypt.compare(code, row.codeHash);
+    if (!ok) {
+      throw new NexaraError(
+        ErrorCodes.UNAUTHORIZED,
+        'OTP expired or invalid',
+        401,
+      );
+    }
+    row.consumedAt = new Date();
+    await this.otps.save(row);
+
+    if (purpose === 'ONBOARDING') {
+      const existing = await this.users.findByMobile(cleanMobile);
+      if (existing && existing.status === 'ACTIVE') {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'This mobile number is already registered. Please sign in instead.',
+          409,
+        );
+      }
+      return {
+        verified: true,
+        mobile: cleanMobile,
+        purpose: 'ONBOARDING' as const,
+      };
+    }
+
     const user = await this.users.findByMobile(cleanMobile);
     if (!user || user.status !== 'ACTIVE') {
       throw new NexaraError(
@@ -79,19 +139,6 @@ export class AuthService {
         401,
       );
     }
-    const row = await this.otps.findOne({
-      where: { mobile: cleanMobile, consumedAt: IsNull() },
-      order: { createdAt: 'DESC' },
-    });
-    if (!row || row.consumedAt || row.expiresAt.getTime() < Date.now()) {
-      throw new NexaraError(ErrorCodes.UNAUTHORIZED, 'OTP expired or invalid', 401);
-    }
-    const ok = await bcrypt.compare(code, row.codeHash);
-    if (!ok) {
-      throw new NexaraError(ErrorCodes.UNAUTHORIZED, 'OTP expired or invalid', 401);
-    }
-    row.consumedAt = new Date();
-    await this.otps.save(row);
     return this.issue(user);
   }
 

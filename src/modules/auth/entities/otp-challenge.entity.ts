@@ -13,6 +13,14 @@ export class OtpChallenge {
   @Column({ name: 'mobile', type: 'varchar', length: 15 })
   mobile: string;
 
+  @Column({
+    name: 'purpose',
+    type: 'varchar',
+    length: 32,
+    default: 'LOGIN',
+  })
+  purpose: string;
+
   @Column({ name: 'code_hash', type: 'varchar', length: 255 })
   codeHash: string;
 

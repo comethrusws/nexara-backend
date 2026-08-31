@@ -17,11 +17,15 @@ export class AuthController {
 
   @Post('otp/request')
   requestOtp(@Body() body: RequestOtpDto) {
-    return this.auth.requestOtp(body.mobile);
+    return this.auth.requestOtp(body.mobile, body.purpose ?? 'LOGIN');
   }
 
   @Post('otp/verify')
   verifyOtp(@Body() body: VerifyOtpDto) {
-    return this.auth.verifyOtp(body.mobile, body.code);
+    return this.auth.verifyOtp(
+      body.mobile,
+      body.code,
+      body.purpose ?? 'LOGIN',
+    );
   }
 }
