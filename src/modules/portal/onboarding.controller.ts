@@ -27,7 +27,7 @@ export class OnboardingController {
   @ApiOperation({
     summary: 'Self-serve merchant registration',
     description:
-      'Creates merchant, runs mock KYC, stores selfie in S3, sets a 6-digit MPIN for payouts, and returns a login session.',
+      'Creates merchant, runs mock KYC, stores selfie in S3, and returns a login session. MPIN is optional here and required only when initiating payouts.',
   })
   @ApiResponse({ status: 201, description: 'Merchant created and session issued' })
   async register(@Body() raw: Record<string, unknown>) {
