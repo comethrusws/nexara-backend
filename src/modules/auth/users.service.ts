@@ -54,6 +54,36 @@ export class UsersService implements OnModuleInit {
     return this.users.findOne({ where: { mobile } });
   }
 
+  async updateMerchantProfile(
+    userId: string,
+    input: { email?: string; name?: string },
+  ): Promise<User> {
+    const user = await this.requireActive(userId);
+    if (user.role !== UserRole.MERCHANT) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only merchant accounts can be updated through onboarding',
+        403,
+      );
+    }
+    if (input.email) {
+      const email = input.email.toLowerCase().trim();
+      const existing = await this.findByEmail(email);
+      if (existing && existing.id !== user.id) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'A user with this email already exists',
+          409,
+        );
+      }
+      user.email = email;
+    }
+    if (input.name) {
+      user.name = input.name;
+    }
+    return this.users.save(user);
+  }
+
   async findMerchantUser(merchantId: string): Promise<User | null> {
     return this.users.findOne({
       where: { merchantId, role: UserRole.MERCHANT, status: 'ACTIVE' },

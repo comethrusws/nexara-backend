@@ -10,6 +10,8 @@ import {
   type ObjectStoragePort,
 } from '../../integrations/storage/storage.types';
 import { AuditService } from '../audit/audit.service';
+import { AuthService } from '../auth/auth.service';
+import { UserRole } from '../auth/auth.constants';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Features, OrganizationType } from '../organizations/organization.constants';
@@ -39,6 +41,7 @@ export class MerchantsService implements OnModuleInit {
     private readonly wallets: WalletService,
     private readonly organizations: OrganizationsService,
     private readonly users: UsersService,
+    private readonly auth: AuthService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
   ) {}
@@ -489,6 +492,59 @@ export class MerchantsService implements OnModuleInit {
 
   async registerSelfServe(input: PublicOnboardingDto) {
     const mobile = input.mobile.replace(/\D/g, '').slice(-10);
+    const existingUser = await this.users.findByMobile(mobile);
+
+    if (existingUser) {
+      if (
+        existingUser.role !== UserRole.MERCHANT ||
+        !existingUser.merchantId
+      ) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'This mobile number is already linked to another account',
+          409,
+        );
+      }
+
+      const existingMerchant = await this.requireMerchant(
+        existingUser.merchantId,
+      );
+      if (existingMerchant.mobile !== mobile) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'The mobile number does not match your registered account',
+          400,
+        );
+      }
+
+      if (existingMerchant.status === MerchantStatus.ACTIVE) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'This mobile number is already registered. Please sign in instead.',
+          409,
+        );
+      }
+
+      if (
+        existingMerchant.status === MerchantStatus.CREATED ||
+        existingMerchant.status === MerchantStatus.KYC_PENDING
+      ) {
+        return this.resumeSelfServeOnboarding(
+          existingMerchant,
+          existingUser.id,
+          input,
+        );
+      }
+
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This merchant account cannot complete onboarding. Please contact support.',
+        409,
+      );
+    }
+
+    await this.auth.assertRecentOnboardingOtp(mobile);
+
     const merchant = await this.create({
       businessName: input.businessName,
       contactPerson: input.contactPerson,
@@ -501,14 +557,39 @@ export class MerchantsService implements OnModuleInit {
       mpin: input.mpin,
     });
 
+    return this.finalizeSelfServeOnboarding(merchant.id, input);
+  }
+
+  private async resumeSelfServeOnboarding(
+    merchant: Merchant,
+    userId: string,
+    input: PublicOnboardingDto,
+  ) {
+    const email = input.email.toLowerCase().trim();
+    merchant.businessName = input.businessName;
+    merchant.contactPerson = input.contactPerson;
+    merchant.address = input.address;
+    merchant.email = email;
+    await this.merchants.save(merchant);
+    await this.users.updateMerchantProfile(userId, {
+      email,
+      name: input.contactPerson,
+    });
+    return this.finalizeSelfServeOnboarding(merchant.id, input);
+  }
+
+  private async finalizeSelfServeOnboarding(
+    merchantId: string,
+    input: PublicOnboardingDto,
+  ) {
     if (input.pan) {
-      await this.verifyPan(merchant.id, input.pan, input.contactPerson);
+      await this.verifyPan(merchantId, input.pan, input.contactPerson);
     }
     if (input.aadhaar) {
-      await this.verifyAadhaar(merchant.id, input.aadhaar);
+      await this.verifyAadhaar(merchantId, input.aadhaar);
     }
 
-    const refreshed = await this.requireMerchant(merchant.id);
+    const refreshed = await this.requireMerchant(merchantId);
     if (input.latitude) {
       refreshed.kyc.latitude = input.latitude;
     }

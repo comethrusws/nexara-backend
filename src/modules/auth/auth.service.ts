@@ -46,6 +46,33 @@ export class AuthService {
     return digits.length > 10 ? digits.slice(-10) : digits;
   }
 
+  /** Requires a consumed ONBOARDING OTP for this mobile (signup verification). */
+  async assertRecentOnboardingOtp(mobile: string): Promise<void> {
+    const cleanMobile = this.normalizeMobile(mobile);
+    const windowMs = 30 * 60 * 1000;
+    const row = await this.otps.findOne({
+      where: {
+        mobile: cleanMobile,
+        purpose: 'ONBOARDING',
+      },
+      order: { consumedAt: 'DESC' },
+    });
+    if (!row?.consumedAt) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Please verify your registered mobile number with OTP before completing onboarding',
+        400,
+      );
+    }
+    if (Date.now() - row.consumedAt.getTime() > windowMs) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'OTP verification expired. Please verify your mobile number again.',
+        400,
+      );
+    }
+  }
+
   async requestOtp(mobile: string, purpose: OtpPurpose = 'LOGIN') {
     const cleanMobile = this.normalizeMobile(mobile);
     const user = await this.users.findByMobile(cleanMobile);
