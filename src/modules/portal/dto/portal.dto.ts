@@ -232,7 +232,21 @@ export class BbpsPayDto {
   @IsString()
   amount?: string;
 
-  @ApiProperty({ description: '6-digit merchant transaction PIN', example: '123456' })
+  @ApiProperty({ description: '4-digit merchant transaction PIN', example: '1234' })
+  @IsString()
+  @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
+  mpin: string;
+}
+
+export class ResetMpinWithPanDto {
+  @ApiProperty({ example: 'ABCDE1234F' })
+  @IsString()
+  @Matches(/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/, {
+    message: 'pan must be 10 characters formatted like ABCDE1234F',
+  })
+  pan: string;
+
+  @ApiProperty({ description: 'New 4-digit transaction PIN', example: '1234' })
   @IsString()
   @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
   mpin: string;

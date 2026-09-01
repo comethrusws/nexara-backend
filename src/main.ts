@@ -14,8 +14,12 @@ async function bootstrap() {
   const port = config.get<number>('port') ?? 3000;
 
   app.setGlobalPrefix('v1');
-  setupSwagger(app);
-  app.enableCors();
+  app.enableCors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-request-id', 'Accept'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  });
   app.use((req: RequestWithId, res: Response, next: NextFunction) => {
     const header = req.header('x-request-id');
     const requestId =

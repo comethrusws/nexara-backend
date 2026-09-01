@@ -13,6 +13,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UsersService } from '../auth/users.service';
 import { BeneficiariesService } from '../beneficiaries/beneficiaries.service';
+import { MerchantsService } from '../merchants/merchants.service';
 import { PayoutsService } from '../payouts/payouts.service';
 import { FundWalletDto } from '../wallet/dto/funding.dto';
 import { WalletService } from '../wallet/wallet.service';
@@ -24,6 +25,7 @@ import {
   IfscLookupDto,
   MerchantPayoutDto,
   ResetMpinDto,
+  ResetMpinWithPanDto,
   SetMpinDto,
 } from './dto/portal.dto';
 
@@ -38,6 +40,7 @@ export class PortalController {
     private readonly beneficiaries: BeneficiariesService,
     private readonly webhooks: WebhooksService,
     private readonly users: UsersService,
+    private readonly merchants: MerchantsService,
   ) {}
 
   @Get('wallet')
@@ -198,6 +201,20 @@ export class PortalController {
   })
   resetMpin(@CurrentUser() user: AuthUser, @Body() body: ResetMpinDto) {
     return this.users.resetMpinWithOtp(user.id, body.code, body.mpin);
+  }
+
+  @Post('mpin/reset-with-pan')
+  @ApiOperation({
+    summary: 'Reset transaction PIN with registered PAN verification',
+  })
+  async resetMpinWithPan(
+    @CurrentUser() user: AuthUser,
+    @Body() body: ResetMpinWithPanDto,
+  ) {
+    const merchantId = this.merchantId(user);
+    const merchant = await this.merchants.get(merchantId);
+    const registeredPan = merchant.kyc?.panMasked || null;
+    return this.users.resetMpinWithPan(user.id, body.pan, body.mpin, registeredPan);
   }
 
   @Get('webhooks')
