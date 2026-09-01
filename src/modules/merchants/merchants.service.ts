@@ -64,20 +64,25 @@ export class MerchantsService implements OnModuleInit {
   async create(input: CreateMerchantDto) {
     const admin = await this.organizations.ensureSeeded();
     const parentId = input.parentOrganizationId ?? admin.id;
+    const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
+    const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
+    const email = input.email || `${input.mobile}@nexara.local`;
+    const address = input.address || 'Pending Onboarding Address';
+
     const org = await this.organizations.createMerchantOrganization({
       parentId,
-      name: input.businessName,
-      contactPerson: input.contactPerson,
+      name: businessName,
+      contactPerson,
       mobile: input.mobile,
-      email: input.email,
+      email,
       organizationType: this.mapEntityType(input.entityType),
     });
     const merchant = this.merchants.create({
-      businessName: input.businessName,
-      contactPerson: input.contactPerson,
+      businessName,
+      contactPerson,
       mobile: input.mobile,
-      email: input.email,
-      address: input.address,
+      email,
+      address,
       status: MerchantStatus.CREATED,
       dailyPayoutLimit: input.dailyPayoutLimit ?? '100000.00',
       perPayoutLimit: input.perPayoutLimit ?? '20000.00',

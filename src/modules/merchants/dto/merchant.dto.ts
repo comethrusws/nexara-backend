@@ -52,24 +52,25 @@ export class FeeTierDto {
 }
 
 export class CreateMerchantDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  businessName: string;
+  businessName?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  contactPerson: string;
+  contactPerson?: string;
 
   @IsString()
   @Matches(MOBILE, { message: 'mobile must be 10 digits' })
   mobile: string;
 
+  @IsOptional()
   @IsEmail()
-  email: string;
+  email?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  address: string;
+  address?: string;
 
   @IsOptional()
   @IsString()
