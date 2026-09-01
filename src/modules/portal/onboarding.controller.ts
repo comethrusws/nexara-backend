@@ -10,6 +10,7 @@ import { validate } from 'class-validator';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { AuthService } from '../auth/auth.service';
 import { Public } from '../auth/decorators/public.decorator';
+import { UsersService } from '../auth/users.service';
 import { PublicOnboardingDto } from '../merchants/dto/merchant.dto';
 import { MerchantsService } from '../merchants/merchants.service';
 
@@ -20,6 +21,7 @@ export class OnboardingController {
   constructor(
     private readonly merchants: MerchantsService,
     private readonly auth: AuthService,
+    private readonly users: UsersService,
     private readonly config: ConfigService,
   ) {}
 
@@ -55,7 +57,15 @@ export class OnboardingController {
       ...body,
       password,
     });
-    const session = await this.auth.login(body.email, password);
+    const user = await this.users.findByMobile(body.mobile);
+    if (!user) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Merchant account was created but login user was not found',
+        500,
+      );
+    }
+    const session = this.auth.issueSessionForUser(user);
     return { merchant, ...session };
   }
 

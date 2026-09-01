@@ -188,6 +188,32 @@ export class OrganizationsService implements OnModuleInit {
     return this.toView(org);
   }
 
+  async updateContactDetails(
+    id: string,
+    input: {
+      email?: string | null;
+      contactPerson?: string;
+      mobile?: string;
+      name?: string;
+    },
+  ) {
+    const org = await this.requireOrg(id);
+    if (input.email !== undefined) {
+      org.email = input.email;
+    }
+    if (input.contactPerson !== undefined) {
+      org.contactPerson = input.contactPerson;
+    }
+    if (input.mobile !== undefined) {
+      org.mobile = input.mobile;
+    }
+    if (input.name !== undefined) {
+      org.name = input.name;
+    }
+    await this.orgs.save(org);
+    return this.toView(org);
+  }
+
   async setStatus(id: string, status: OrganizationStatus) {
     const org = await this.requireOrg(id);
     if (

@@ -56,7 +56,7 @@ export class UsersService implements OnModuleInit {
 
   async updateMerchantProfile(
     userId: string,
-    input: { email?: string; name?: string },
+    input: { email?: string; name?: string; password?: string },
   ): Promise<User> {
     const user = await this.requireActive(userId);
     if (user.role !== UserRole.MERCHANT) {
@@ -80,6 +80,9 @@ export class UsersService implements OnModuleInit {
     }
     if (input.name) {
       user.name = input.name;
+    }
+    if (input.password) {
+      user.passwordHash = await bcrypt.hash(input.password, 10);
     }
     return this.users.save(user);
   }

@@ -57,7 +57,7 @@ export class MerchantsService implements OnModuleInit {
         name: merchant.businessName,
         contactPerson: merchant.contactPerson,
         mobile: merchant.mobile,
-        email: merchant.email,
+        email: merchant.email ?? undefined,
       });
       merchant.organizationId = org.id;
       await this.merchants.save(merchant);
@@ -69,7 +69,7 @@ export class MerchantsService implements OnModuleInit {
     const parentId = input.parentOrganizationId ?? admin.id;
     const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
     const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
-    const email = input.email || `${input.mobile}@nexara.local`;
+    const email = input.email?.toLowerCase().trim() || null;
     const address = input.address || 'Pending Onboarding Address';
 
     const org = await this.organizations.createMerchantOrganization({
@@ -77,7 +77,7 @@ export class MerchantsService implements OnModuleInit {
       name: businessName,
       contactPerson,
       mobile: input.mobile,
-      email,
+      email: email ?? undefined,
       organizationType: this.mapEntityType(input.entityType),
     });
     const merchant = this.merchants.create({
@@ -112,15 +112,17 @@ export class MerchantsService implements OnModuleInit {
       panImageMatch: 'PENDING',
     });
     saved.kyc = await this.kycRecords.save(kyc);
-    await this.users.createMerchantUser({
-      email: saved.email,
-      name: saved.contactPerson,
-      mobile: saved.mobile,
-      merchantId: saved.id,
-      organizationId: saved.organizationId,
-      password: input.password,
-      mpin: input.mpin,
-    });
+    if (email) {
+      await this.users.createMerchantUser({
+        email,
+        name: saved.contactPerson,
+        mobile: saved.mobile,
+        merchantId: saved.id,
+        organizationId: saved.organizationId,
+        password: input.password,
+        mpin: input.mpin,
+      });
+    }
     await this.audit.record({
       actorEmail: 'system',
       actorRole: 'ADMIN',
@@ -145,7 +147,7 @@ export class MerchantsService implements OnModuleInit {
           const q = filters.search!.toLowerCase();
           return (
             row.businessName.toLowerCase().includes(q) ||
-            row.email.toLowerCase().includes(q) ||
+            (row.email?.toLowerCase().includes(q) ?? false) ||
             row.mobile.includes(q)
           );
         })
@@ -543,20 +545,68 @@ export class MerchantsService implements OnModuleInit {
       );
     }
 
-    await this.auth.assertRecentOnboardingOtp(mobile);
+    const existingMerchant = await this.merchants.findOne({
+      where: { mobile },
+      order: { createdAt: 'DESC' },
+    });
+    if (existingMerchant) {
+      if (existingMerchant.status === MerchantStatus.ACTIVE) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'This mobile number is already registered. Please sign in instead.',
+          409,
+        );
+      }
+      if (
+        existingMerchant.status === MerchantStatus.CREATED ||
+        existingMerchant.status === MerchantStatus.KYC_PENDING
+      ) {
+        await this.auth.assertRecentOnboardingOtp(mobile);
+        return this.completeProvisionedMerchantOnboarding(
+          existingMerchant,
+          input,
+        );
+      }
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This merchant account cannot complete onboarding. Please contact support.',
+        409,
+      );
+    }
 
-    const merchant = await this.create({
-      businessName: input.businessName,
-      contactPerson: input.contactPerson,
-      mobile,
-      email: input.email,
-      address: input.address,
-      dailyPayoutLimit: input.dailyPayoutLimit ?? '100000.00',
-      parentOrganizationId: input.parentOrganizationId,
+    throw new NexaraError(
+      ErrorCodes.INVALID_REQUEST,
+      'This mobile number is not provisioned. Please contact your administrator.',
+      404,
+    );
+  }
+
+  private async completeProvisionedMerchantOnboarding(
+    merchant: Merchant,
+    input: PublicOnboardingDto,
+  ) {
+    const email = input.email.toLowerCase().trim();
+    merchant.businessName = input.businessName;
+    merchant.contactPerson = input.contactPerson;
+    merchant.address = input.address;
+    merchant.email = email;
+    await this.merchants.save(merchant);
+    if (merchant.organizationId) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        email,
+        contactPerson: input.contactPerson,
+        name: input.businessName,
+      });
+    }
+    await this.users.createMerchantUser({
+      email,
+      name: input.contactPerson,
+      mobile: merchant.mobile,
+      merchantId: merchant.id,
+      organizationId: merchant.organizationId,
       password: input.password,
       mpin: input.mpin,
     });
-
     return this.finalizeSelfServeOnboarding(merchant.id, input);
   }
 
@@ -571,9 +621,17 @@ export class MerchantsService implements OnModuleInit {
     merchant.address = input.address;
     merchant.email = email;
     await this.merchants.save(merchant);
+    if (merchant.organizationId) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        email,
+        contactPerson: input.contactPerson,
+        name: input.businessName,
+      });
+    }
     await this.users.updateMerchantProfile(userId, {
       email,
       name: input.contactPerson,
+      password: input.password,
     });
     return this.finalizeSelfServeOnboarding(merchant.id, input);
   }
