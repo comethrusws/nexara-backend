@@ -69,7 +69,8 @@ export class MerchantsService implements OnModuleInit {
     const parentId = input.parentOrganizationId ?? admin.id;
     const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
     const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
-    const email = input.email?.toLowerCase().trim() || null;
+    const email = input.email || '';
+
     const address = input.address || 'Pending Onboarding Address';
 
     const org = await this.organizations.createMerchantOrganization({
