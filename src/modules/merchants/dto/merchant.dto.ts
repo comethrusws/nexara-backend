@@ -13,7 +13,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { MPIN_PATTERN, MPIN_VALIDATION_MESSAGE } from '../../../common/dto/mpin';
-import { FeeType, MerchantStatus, MerchantTier } from '../merchant.enums';
+import { FeeType, MerchantChannel, MerchantStatus, MerchantTier } from '../merchant.enums';
 
 const AMOUNT = /^\d+(\.\d{1,2})?$/;
 const MOBILE = /^\d{10}$/;
@@ -103,6 +103,26 @@ export class CreateMerchantDto {
   @IsString()
   @Matches(AMOUNT)
   perPayoutLimit?: string;
+
+  @IsOptional()
+  @IsString()
+  feeSlabsJson?: string;
+
+  @IsOptional()
+  @IsString()
+  distributorCommissionPercent?: string;
+
+  @IsOptional()
+  @IsString()
+  superDistributorCommissionPercent?: string;
+
+  @IsOptional()
+  @IsString()
+  masterDistributorCommissionPercent?: string;
+
+  @IsOptional()
+  @IsEnum(MerchantChannel)
+  channel?: MerchantChannel;
 
   @IsOptional()
   @IsEnum(MerchantTier)
