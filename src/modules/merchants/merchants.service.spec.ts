@@ -5,6 +5,7 @@ import { ErrorCodes } from '../../common/errors/nexara-error';
 import { KYC_PORT } from '../../integrations/kyc/kyc.types';
 import { OBJECT_STORAGE } from '../../integrations/storage/storage.types';
 import { UsersService } from '../auth/users.service';
+import { AuthService } from '../auth/auth.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationsService } from '../organizations/organizations.service';
@@ -85,7 +86,8 @@ describe('MerchantsService', () => {
         },
         { provide: WalletService, useValue: wallets },
         { provide: OrganizationsService, useValue: organizations },
-        { provide: UsersService, useValue: { createMerchantUser: jest.fn() } },
+        { provide: UsersService, useValue: { createMerchantUser: jest.fn(), findByMobile: jest.fn() } },
+        { provide: AuthService, useValue: { assertRecentOnboardingOtp: jest.fn() } },
         {
           provide: NotificationsService,
           useValue: { notifyUser: jest.fn() },

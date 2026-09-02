@@ -183,13 +183,15 @@ export class PublicOnboardingDto {
   @IsString()
   password?: string;
 
-  @ApiProperty({
-    description: '6-digit transaction PIN required for payouts',
+  @ApiPropertyOptional({
+    description:
+      'Optional 6-digit transaction PIN; can be set later via POST /v1/me/mpin before payouts',
     example: '123456',
   })
+  @IsOptional()
   @IsString()
   @Matches(MPIN_PATTERN, { message: MPIN_VALIDATION_MESSAGE })
-  mpin: string;
+  mpin?: string;
 
   @IsOptional()
   @IsString()

@@ -26,8 +26,8 @@ export class Merchant {
   @Column({ name: 'mobile', type: 'varchar', length: 15 })
   mobile: string;
 
-  @Column({ name: 'email', type: 'varchar', length: 255 })
-  email: string;
+  @Column({ name: 'email', type: 'varchar', length: 255, nullable: true })
+  email: string | null;
 
   @Column({ name: 'address', type: 'varchar', length: 500 })
   address: string;

@@ -8,6 +8,8 @@ import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { User } from './entities/user.entity';
 import { UsersService } from './users.service';
+import { Merchant } from '../merchants/entities/merchant.entity';
+import { MerchantStatus } from '../merchants/merchant.enums';
 
 export type OtpPurpose = 'LOGIN' | 'ONBOARDING';
 
@@ -19,6 +21,8 @@ export class AuthService {
     private readonly config: ConfigService,
     @InjectRepository(OtpChallenge)
     private readonly otps: Repository<OtpChallenge>,
+    @InjectRepository(Merchant)
+    private readonly merchants: Repository<Merchant>,
   ) {}
 
   async login(email: string, password: string) {
@@ -46,6 +50,65 @@ export class AuthService {
     return digits.length > 10 ? digits.slice(-10) : digits;
   }
 
+  /** Requires a consumed ONBOARDING OTP for this mobile (signup verification). */
+  async assertRecentOnboardingOtp(mobile: string): Promise<void> {
+    const cleanMobile = this.normalizeMobile(mobile);
+    const windowMs = 30 * 60 * 1000;
+    const row = await this.otps.findOne({
+      where: {
+        mobile: cleanMobile,
+        purpose: 'ONBOARDING',
+      },
+      order: { consumedAt: 'DESC' },
+    });
+    if (!row?.consumedAt) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Please verify your registered mobile number with OTP before completing onboarding',
+        400,
+      );
+    }
+    if (Date.now() - row.consumedAt.getTime() > windowMs) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'OTP verification expired. Please verify your mobile number again.',
+        400,
+      );
+    }
+  }
+
+  /** Only mobiles pre-provisioned by admin may use ONBOARDING OTP. */
+  private async assertProvisionedForOnboarding(cleanMobile: string): Promise<void> {
+    const merchant = await this.merchants.findOne({
+      where: { mobile: cleanMobile },
+      order: { createdAt: 'DESC' },
+    });
+    if (!merchant) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is not provisioned. Please contact your administrator.',
+        404,
+      );
+    }
+    if (merchant.status === MerchantStatus.ACTIVE) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already registered. Please sign in instead.',
+        409,
+      );
+    }
+    if (
+      merchant.status !== MerchantStatus.CREATED &&
+      merchant.status !== MerchantStatus.KYC_PENDING
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This merchant account cannot complete onboarding. Please contact support.',
+        409,
+      );
+    }
+  }
+
   async requestOtp(mobile: string, purpose: OtpPurpose = 'LOGIN') {
     const cleanMobile = this.normalizeMobile(mobile);
     const user = await this.users.findByMobile(cleanMobile);
@@ -58,12 +121,15 @@ export class AuthService {
           401,
         );
       }
-    } else if (user && user.status === 'ACTIVE') {
-      throw new NexaraError(
-        ErrorCodes.INVALID_REQUEST,
-        'This mobile number is already registered. Please sign in instead.',
-        409,
-      );
+    } else {
+      await this.assertProvisionedForOnboarding(cleanMobile);
+      if (user && user.status === 'ACTIVE') {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'This mobile number is already registered. Please sign in instead.',
+          409,
+        );
+      }
     }
 
     const demoCode = this.config.get<string>('auth.otpCode') ?? '123456';
@@ -116,6 +182,7 @@ export class AuthService {
     await this.otps.save(row);
 
     if (purpose === 'ONBOARDING') {
+      await this.assertProvisionedForOnboarding(cleanMobile);
       const existing = await this.users.findByMobile(cleanMobile);
       if (existing && existing.status === 'ACTIVE') {
         throw new NexaraError(
@@ -139,6 +206,10 @@ export class AuthService {
         401,
       );
     }
+    return this.issue(user);
+  }
+
+  issueSessionForUser(user: User) {
     return this.issue(user);
   }
 

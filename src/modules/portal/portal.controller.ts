@@ -1,11 +1,24 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { memoryStorage } from 'multer';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import type { AuthUser } from '../auth/auth.constants';
 import { UserRole } from '../auth/auth.constants';
@@ -182,6 +195,53 @@ export class PortalController {
   })
   setMpin(@CurrentUser() user: AuthUser, @Body() body: SetMpinDto) {
     return this.users.setMpin(user.id, body.mpin, body.currentMpin);
+  }
+
+  @Post('kyc/documents')
+  @ApiOperation({
+    summary: 'Upload KYC identity documents',
+    description:
+      'Merchant uploads PAN, Aadhaar (front/back), and optional selfie images during onboarding or KYC updates.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        aadhaarFront: { type: 'string', format: 'binary' },
+        aadhaarBack: { type: 'string', format: 'binary' },
+        pan: { type: 'string', format: 'binary' },
+        selfie: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'aadhaarFront', maxCount: 1 },
+        { name: 'aadhaarBack', maxCount: 1 },
+        { name: 'pan', maxCount: 1 },
+        { name: 'selfie', maxCount: 1 },
+      ],
+      { storage: memoryStorage() },
+    ),
+  )
+  uploadKycDocuments(
+    @CurrentUser() user: AuthUser,
+    @UploadedFiles()
+    files: {
+      aadhaarFront?: Express.Multer.File[];
+      aadhaarBack?: Express.Multer.File[];
+      pan?: Express.Multer.File[];
+      selfie?: Express.Multer.File[];
+    },
+  ) {
+    return this.merchants.storeKycFiles(this.merchantId(user), {
+      aadhaarFront: files?.aadhaarFront?.[0],
+      aadhaarBack: files?.aadhaarBack?.[0],
+      pan: files?.pan?.[0],
+      selfie: files?.selfie?.[0],
+    });
   }
 
   @Post('mpin/reset/request')
