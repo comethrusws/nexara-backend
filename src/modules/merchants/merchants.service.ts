@@ -311,18 +311,54 @@ export class MerchantsService implements OnModuleInit {
         409,
       );
     }
+
+    // Ensure merchant has actually completed onboarding before approval
+    const missingOnboarding: string[] = [];
+    if (!merchant.kyc.panImagePath) {
+      missingOnboarding.push('PAN card image');
+    }
+    if (!merchant.kyc.aadhaarFrontPath) {
+      missingOnboarding.push('Aadhaar card image');
+    }
+    if (!merchant.kyc.selfiePath) {
+      missingOnboarding.push('Selfie photo');
+    }
+    if (!merchant.kyc.latitude || !merchant.kyc.longitude) {
+      missingOnboarding.push('GPS location');
+    }
+    if (!merchant.kyc.agreementSignedAt) {
+      missingOnboarding.push('Merchant agreement');
+    }
+    if (missingOnboarding.length > 0) {
+      throw new NexaraError(
+        ErrorCodes.KYC_INCOMPLETE,
+        `Merchant has not completed onboarding. Missing: ${missingOnboarding.join(', ')}`,
+        409,
+      );
+    }
+
+    // Verify KYC documents were verified
     if (
       merchant.kyc.aadhaarStatus !== 'VERIFIED' ||
-      merchant.kyc.panStatus !== 'VERIFIED' ||
+      merchant.kyc.panStatus !== 'VERIFIED'
+    ) {
+      throw new NexaraError(
+        ErrorCodes.KYC_INCOMPLETE,
+        'Aadhaar and PAN verification must be completed before activation',
+        409,
+      );
+    }
+    if (
       merchant.kyc.aadhaarImageMatch !== 'MATCHED' ||
       merchant.kyc.panImageMatch !== 'MATCHED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
-        'Aadhaar and PAN must be verified and document images must match API details',
+        'Document images must match API verification details',
         409,
       );
     }
+
     const organizationId = this.requireOrganizationId(merchant);
     await this.organizations.assertAncestorsActive(organizationId);
     await this.organizations.assertFeature(organizationId, Features.WALLET);
