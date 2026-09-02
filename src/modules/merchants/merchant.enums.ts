@@ -16,4 +16,11 @@ export enum FeeType {
   FIXED = 'FIXED',
   PERCENTAGE = 'PERCENTAGE',
   TIERED = 'TIERED',
+  SLAB = 'SLAB',
+  API_SLAB = 'API_SLAB',
+}
+
+export enum MerchantChannel {
+  STANDARD = 'STANDARD',
+  API = 'API',
 }

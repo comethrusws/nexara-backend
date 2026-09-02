@@ -10,7 +10,7 @@ import {
 } from 'typeorm';
 import { Organization } from '../../organizations/entities/organization.entity';
 import { MerchantKyc } from './merchant-kyc.entity';
-import { FeeType, MerchantStatus, MerchantTier } from '../merchant.enums';
+import { FeeType, MerchantChannel, MerchantStatus, MerchantTier } from '../merchant.enums';
 
 @Entity({ name: 'merchant' })
 export class Merchant {
@@ -75,6 +75,21 @@ export class Merchant {
 
   @Column({ name: 'fee_tiers_json', type: 'text', nullable: true })
   feeTiersJson: string | null;
+
+  @Column({ name: 'fee_slabs_json', type: 'text', nullable: true })
+  feeSlabsJson: string | null;
+
+  @Column({ name: 'distributor_commission_percent', type: 'varchar', length: 10, default: '0.20' })
+  distributorCommissionPercent: string;
+
+  @Column({ name: 'super_distributor_commission_percent', type: 'varchar', length: 10, default: '0.025' })
+  superDistributorCommissionPercent: string;
+
+  @Column({ name: 'master_distributor_commission_percent', type: 'varchar', length: 10, default: '0.010' })
+  masterDistributorCommissionPercent: string;
+
+  @Column({ name: 'channel', type: 'varchar', length: 20, default: MerchantChannel.STANDARD })
+  channel: MerchantChannel;
 
   @Column({ name: 'enabled_services_json', type: 'text', nullable: true })
   enabledServicesJson: string | null;
