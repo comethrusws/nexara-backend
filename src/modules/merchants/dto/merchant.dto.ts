@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
@@ -64,6 +64,7 @@ export class CreateMerchantDto {
   @Matches(MOBILE, { message: 'mobile must be 10 digits' })
   mobile: string;
 
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsOptional()
   @IsEmail()
   email?: string;
