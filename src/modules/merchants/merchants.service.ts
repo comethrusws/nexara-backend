@@ -66,7 +66,10 @@ export class MerchantsService implements OnModuleInit {
 
   async create(input: CreateMerchantDto) {
     const admin = await this.organizations.ensureSeeded();
-    const parentId = input.parentOrganizationId ?? admin.id;
+    const parentId =
+      input.parentOrganizationId && input.parentOrganizationId.trim()
+        ? input.parentOrganizationId
+        : admin.id;
     const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
     const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
     const email = input.email || '';
