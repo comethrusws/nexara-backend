@@ -2,7 +2,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
-import { addAmounts, parseNonNegativeAmount } from '../../common/money/money';
+import {
+  addAmounts,
+  parseNonNegativeAmount,
+} from '../../common/money/money';
 import { BankRegistry } from '../../integrations/banks/bank.registry';
 import {
   BankPayoutResult,
@@ -16,9 +19,14 @@ import {
 import { MerchantsService } from '../merchants/merchants.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { OrganizationType } from '../organizations/organization.constants';
 import { WalletService } from '../wallet/wallet.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
-import { calculatePayoutCharges } from './fee.calculator';
+import { AuditService } from '../audit/audit.service';
+import {
+  calculateMultiLayerCommission,
+  calculatePayoutCharges,
+} from './fee.calculator';
 import { Payout, PayoutStatus } from './entities/payout.entity';
 import { PayoutStatusEvent } from './entities/payout-status-event.entity';
 
@@ -34,6 +42,7 @@ export class PayoutsService {
     private readonly wallets: WalletService,
     private readonly notifications: NotificationsService,
     private readonly webhooks: WebhooksService,
+    private readonly audit: AuditService,
     @Inject(FINERACT_PORT) private readonly fineract: FineractPort,
     private readonly banks: BankRegistry,
   ) {}
@@ -85,6 +94,8 @@ export class PayoutsService {
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
       feeTiersJson: merchant.feeTiersJson,
+      feeSlabsJson: merchant.feeSlabsJson,
+      channel: merchant.channel,
     });
 
     await this.assertDailyLimit(merchant.id, merchant.dailyPayoutLimit, charges.payoutAmount);
@@ -129,6 +140,10 @@ export class PayoutsService {
         fee: charges.fee,
         gst: charges.gst,
         reserved: charges.reserved,
+        appliedSlab: charges.appliedSlab ?? null,
+        commissionLayer1: null,
+        commissionLayer2: null,
+        commissionLayer3: null,
         status: PayoutStatus.FUNDS_BLOCKED,
         paymentMode: input.beneficiary.paymentMode,
         beneficiaryName: input.beneficiary.name,
@@ -234,7 +249,8 @@ export class PayoutsService {
   ): Promise<void> {
     payout.bankReference = bankResult.bankReference;
     if (bankResult.status === 'SUCCESS') {
-      if (payout.status !== PayoutStatus.SUCCESS && payout.holdTransactionId) {
+      const firstSuccess = payout.status !== PayoutStatus.SUCCESS;
+      if (firstSuccess && payout.holdTransactionId) {
         await this.fineract.finalizeSuccessfulPayout({
           savingsAccountId,
           holdTransactionId: payout.holdTransactionId,
@@ -244,6 +260,9 @@ export class PayoutsService {
           receiptNumber: payout.id,
           payoutNote: `Payout ${payout.merchantReference}`,
         });
+      }
+      if (firstSuccess) {
+        await this.distributeUplineCommissions(payout);
       }
       payout.status = PayoutStatus.SUCCESS;
       payout.failureReason = null;
@@ -297,6 +316,142 @@ export class PayoutsService {
       await this.recordStatus(payout.id, PayoutStatus.UNKNOWN);
     }
     await this.payouts.save(payout);
+  }
+
+  private async distributeUplineCommissions(payout: Payout): Promise<void> {
+    let merchant;
+    try {
+      merchant = await this.merchants.requireById(payout.merchantId);
+    } catch (error) {
+      await this.safeAudit('COMMISSION_FAILED', payout, null,
+        `Could not load merchant for commission: ${this.errorMessage(error)}`);
+      return;
+    }
+    if (!merchant.organizationId) {
+      return;
+    }
+    const commissions = calculateMultiLayerCommission({
+      transactionAmount: payout.amount,
+      distributorCommissionPercent: merchant.distributorCommissionPercent,
+      superDistributorCommissionPercent:
+        merchant.superDistributorCommissionPercent,
+      masterDistributorCommissionPercent:
+        merchant.masterDistributorCommissionPercent,
+    });
+    payout.commissionLayer1 = commissions.layer1DistributorCommission;
+    payout.commissionLayer2 = commissions.layer2SuperDistributorCommission;
+    payout.commissionLayer3 = commissions.layer3MasterCommission;
+
+    let chain;
+    try {
+      chain = await this.organizations.ancestors(merchant.organizationId);
+    } catch (error) {
+      await this.safeAudit('COMMISSION_FAILED', payout, merchant.id,
+        `Could not resolve upline hierarchy: ${this.errorMessage(error)}`);
+      return;
+    }
+    const nearestFirst = [...chain].reverse();
+    let layer1Org: { id: string } | null = null;
+    let layer2Org: { id: string } | null = null;
+    for (const org of nearestFirst) {
+      if (org.id === merchant.organizationId) {
+        continue;
+      }
+      if (!layer1Org && org.type === OrganizationType.DISTRIBUTOR) {
+        layer1Org = org;
+      } else if (
+        !layer2Org &&
+        org.type === OrganizationType.SUPER_DISTRIBUTOR
+      ) {
+        layer2Org = org;
+      }
+      if (layer1Org && layer2Org) {
+        break;
+      }
+    }
+    const root = chain[0] ?? null;
+    const layer3Org =
+      root &&
+      root.id !== merchant.organizationId &&
+      root.id !== layer1Org?.id &&
+      root.id !== layer2Org?.id
+        ? root
+        : null;
+
+    const legs = [
+      {
+        org: layer1Org,
+        amount: commissions.layer1DistributorCommission,
+        layer: 'L1-DISTRIBUTOR',
+      },
+      {
+        org: layer2Org,
+        amount: commissions.layer2SuperDistributorCommission,
+        layer: 'L2-SUPER-DISTRIBUTOR',
+      },
+      {
+        org: layer3Org,
+        amount: commissions.layer3MasterCommission,
+        layer: 'L3-MASTER',
+      },
+    ];
+    for (const leg of legs) {
+      if (!leg.org || parseNonNegativeAmount(leg.amount) <= 0) {
+        continue;
+      }
+      try {
+        const recipient = await this.merchants.findByOrganizationId(
+          leg.org.id,
+        );
+        if (!recipient) {
+          await this.safeAudit(
+            'COMMISSION_SKIPPED',
+            payout,
+            merchant.id,
+            `${leg.layer} commission of ₹${leg.amount} skipped: no merchant wallet attached to org ${leg.org.id}`,
+          );
+          continue;
+        }
+        await this.wallets.creditWallet(recipient.id, {
+          amount: leg.amount,
+          externalPaymentReference: `COMM-${payout.id}-${leg.layer}`,
+          notes: `${leg.layer} commission for payout ${payout.merchantReference} of ₹${payout.amount}`,
+        });
+        await this.safeAudit(
+          'COMMISSION_CREDITED',
+          payout,
+          recipient.id,
+          `${leg.layer} commission of ₹${leg.amount} credited for payout ${payout.merchantReference}`,
+        );
+      } catch (error) {
+        await this.safeAudit('COMMISSION_FAILED', payout, merchant.id,
+          `${leg.layer} commission of ₹${leg.amount} failed: ${this.errorMessage(error)}`);
+      }
+    }
+  }
+
+  private async safeAudit(
+    action: string,
+    payout: Payout,
+    merchantId: string | null,
+    details: string,
+  ): Promise<void> {
+    try {
+      await this.audit.record({
+        actorEmail: 'system',
+        actorRole: 'SYSTEM',
+        action,
+        merchantId,
+        reference: payout.id,
+        details,
+      });
+    } catch {
+      // audit must never break payouts
+    }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'Unknown error';
   }
 
   private async assertDailyLimit(
@@ -387,6 +542,12 @@ export class PayoutsService {
       tax: payout.gst,
       reserved: payout.reserved,
       totalReserved: payout.reserved,
+      appliedSlab: payout.appliedSlab,
+      commissions: {
+        layer1Distributor: payout.commissionLayer1,
+        layer2SuperDistributor: payout.commissionLayer2,
+        layer3Master: payout.commissionLayer3,
+      },
       status: payout.status,
       paymentMode: payout.paymentMode,
       beneficiary: {

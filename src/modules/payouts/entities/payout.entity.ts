@@ -40,6 +40,33 @@ export class Payout {
   @Column({ name: 'reserved', type: 'varchar', length: 20 })
   reserved: string;
 
+  @Column({ name: 'applied_slab', type: 'varchar', length: 128, nullable: true })
+  appliedSlab: string | null;
+
+  @Column({
+    name: 'commission_layer1',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+  })
+  commissionLayer1: string | null;
+
+  @Column({
+    name: 'commission_layer2',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+  })
+  commissionLayer2: string | null;
+
+  @Column({
+    name: 'commission_layer3',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+  })
+  commissionLayer3: string | null;
+
   @Column({ name: 'status', type: 'varchar', length: 32 })
   status: PayoutStatus;
 

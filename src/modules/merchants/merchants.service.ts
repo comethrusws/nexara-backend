@@ -141,6 +141,12 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(await this.requireMerchant(id));
   }
 
+  async findByOrganizationId(
+    organizationId: string,
+  ): Promise<Merchant | null> {
+    return this.merchants.findOne({ where: { organizationId } });
+  }
+
   async list(filters?: { status?: string; search?: string }) {
     const rows = await this.merchants.find({
       relations: { kyc: true },
@@ -310,6 +316,26 @@ export class MerchantsService implements OnModuleInit {
       merchant.feeType = FeeType.PERCENTAGE;
       merchant.feeValue = input.percentFee;
     }
+    if (input.feeSlabsJson !== undefined) {
+      if (input.feeSlabsJson) {
+        this.validateFeeSlabs(input.feeSlabsJson);
+      }
+      merchant.feeSlabsJson = input.feeSlabsJson || null;
+    }
+    if (input.channel) {
+      merchant.channel = input.channel;
+    }
+    if (input.distributorCommissionPercent !== undefined) {
+      merchant.distributorCommissionPercent = input.distributorCommissionPercent;
+    }
+    if (input.superDistributorCommissionPercent !== undefined) {
+      merchant.superDistributorCommissionPercent =
+        input.superDistributorCommissionPercent;
+    }
+    if (input.masterDistributorCommissionPercent !== undefined) {
+      merchant.masterDistributorCommissionPercent =
+        input.masterDistributorCommissionPercent;
+    }
     if (input.services) {
       merchant.enabledServicesJson = JSON.stringify(input.services);
     }
@@ -327,6 +353,54 @@ export class MerchantsService implements OnModuleInit {
       newValue: { status: merchant.status, tier: merchant.tier },
     });
     return this.toView(merchant);
+  }
+
+  private validateFeeSlabs(feeSlabsJson: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(feeSlabsJson);
+    } catch {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'feeSlabsJson must be valid JSON',
+      );
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'feeSlabsJson must be a non-empty array of slab rules',
+      );
+    }
+    for (const rule of parsed as Array<Record<string, unknown>>) {
+      if (
+        typeof rule.minAmount !== 'number' ||
+        rule.minAmount < 0 ||
+        typeof rule.maxAmount !== 'number' ||
+        rule.maxAmount < 0 ||
+        (rule.maxAmount !== 0 && rule.maxAmount <= rule.minAmount)
+      ) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'Each fee slab needs minAmount >= 0 and maxAmount > minAmount (0 means no upper limit)',
+        );
+      }
+      if (rule.flatFee == null && rule.percentFee == null) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'Each fee slab needs a flatFee, a percentFee, or both',
+        );
+      }
+      if (
+        rule.type != null &&
+        rule.type !== 'FIXED' &&
+        rule.type !== 'PERCENTAGE'
+      ) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'Fee slab type must be FIXED or PERCENTAGE',
+        );
+      }
+    }
   }
 
   async network() {
@@ -1067,6 +1141,13 @@ export class MerchantsService implements OnModuleInit {
       feeType: merchant.feeType,
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
+      feeSlabsJson: merchant.feeSlabsJson,
+      channel: merchant.channel,
+      distributorCommissionPercent: merchant.distributorCommissionPercent,
+      superDistributorCommissionPercent:
+        merchant.superDistributorCommissionPercent,
+      masterDistributorCommissionPercent:
+        merchant.masterDistributorCommissionPercent,
       feeConfig: {
         feeModel: merchant.feeType,
         fixedFee: parseFloat(fixedFee),
