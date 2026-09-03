@@ -169,6 +169,122 @@ export class MerchantsService implements OnModuleInit {
     return Promise.all(filtered.map((row) => this.toView(row)));
   }
 
+  async listKycVerifications(filters?: { status?: string; search?: string }) {
+    const rows = await this.merchants.find({
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+
+    const kycStatuses = [
+      MerchantStatus.CREATED,
+      MerchantStatus.KYC_PENDING,
+      MerchantStatus.ACTIVE,
+      MerchantStatus.REJECTED,
+    ];
+
+    let filtered = rows.filter((row) => kycStatuses.includes(row.status));
+
+    if (filters?.status && filters.status !== 'ALL') {
+      filtered = filtered.filter((row) => row.status === filters.status);
+    }
+
+    if (filters?.search) {
+      const q = filters.search.toLowerCase();
+      filtered = filtered.filter(
+        (row) =>
+          row.businessName.toLowerCase().includes(q) ||
+          row.mobile.includes(q) ||
+          (row.email?.toLowerCase().includes(q) ?? false),
+      );
+    }
+
+    return Promise.all(
+      filtered.map((row) => this.toKycVerificationView(row)),
+    );
+  }
+
+  async getKycVerificationDetail(id: string) {
+    const merchant = await this.requireMerchant(id);
+    const presignedUrls = await this.getKycPresignedUrls(id);
+    return {
+      ...this.toView(merchant),
+      kycDetail: {
+        aadhaarLast4: merchant.kyc.aadhaarLast4,
+        panMasked: merchant.kyc.panMasked,
+        aadhaarStatus: merchant.kyc.aadhaarStatus,
+        panStatus: merchant.kyc.panStatus,
+        aadhaarImageMatch: merchant.kyc.aadhaarImageMatch,
+        panImageMatch: merchant.kyc.panImageMatch,
+        shopType: merchant.kyc.shopType,
+        latitude: merchant.kyc.latitude,
+        longitude: merchant.kyc.longitude,
+        agreementSignedAt: merchant.kyc.agreementSignedAt,
+        images: presignedUrls,
+      },
+    };
+  }
+
+  async rejectKyc(
+    id: string,
+    reason?: string,
+    actorEmail = 'ops',
+  ) {
+    const merchant = await this.requireMerchant(id);
+    if (
+      merchant.status !== MerchantStatus.KYC_PENDING &&
+      merchant.status !== MerchantStatus.CREATED
+    ) {
+      throw new NexaraError(
+        ErrorCodes.MERCHANT_INACTIVE,
+        'Only merchants with pending KYC can be rejected',
+        409,
+      );
+    }
+    merchant.status = MerchantStatus.REJECTED;
+    await this.merchants.save(merchant);
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'ADMIN',
+      action: 'MERCHANT_KYC_REJECTED',
+      merchantId: merchant.id,
+      details: reason ?? 'KYC application rejected by ops',
+    });
+    return this.toView(merchant);
+  }
+
+  private toKycVerificationView(merchant: Merchant) {
+    const isComplete =
+      merchant.kyc.panImagePath &&
+      merchant.kyc.aadhaarFrontPath &&
+      merchant.kyc.selfiePath &&
+      merchant.kyc.latitude &&
+      merchant.kyc.longitude &&
+      merchant.kyc.agreementSignedAt;
+
+    return {
+      id: merchant.id,
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      email: merchant.email,
+      status: merchant.status,
+      createdAt: merchant.createdAt,
+      kyc: {
+        panStatus: merchant.kyc.panStatus,
+        aadhaarStatus: merchant.kyc.aadhaarStatus,
+        panImageMatch: merchant.kyc.panImageMatch,
+        aadhaarImageMatch: merchant.kyc.aadhaarImageMatch,
+        hasPanImage: Boolean(merchant.kyc.panImagePath),
+        hasAadhaarImage: Boolean(merchant.kyc.aadhaarFrontPath),
+        hasSelfie: Boolean(merchant.kyc.selfiePath),
+        hasLocation: Boolean(merchant.kyc.latitude && merchant.kyc.longitude),
+        hasAgreement: Boolean(merchant.kyc.agreementSignedAt),
+        isComplete: Boolean(isComplete),
+        submittedAt: merchant.kyc.updatedAt,
+      },
+    };
+  }
+
   async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
     const merchant = await this.requireMerchant(id);
     const previous = { status: merchant.status, tier: merchant.tier };
