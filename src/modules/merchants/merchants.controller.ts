@@ -26,6 +26,7 @@ import { UsersService } from '../auth/users.service';
 import {
   CreateMerchantDto,
   OnboardingExtrasDto,
+  RejectKycDto,
   SuspendMerchantDto,
   UpdateMerchantDto,
   VerifyAadhaarDto,
@@ -59,6 +60,27 @@ export class MerchantsController {
   @Get('network')
   network() {
     return this.merchants.network();
+  }
+
+  @Get('kyc-verifications')
+  @ApiOperation({ summary: 'List merchants for KYC review queue' })
+  listKycVerifications(
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.merchants.listKycVerifications({ status, search });
+  }
+
+  @Get('kyc-verifications/:id')
+  @ApiOperation({ summary: 'Get KYC verification detail with document URLs' })
+  getKycVerification(@Param('id') id: string) {
+    return this.merchants.getKycVerification(id);
+  }
+
+  @Get('kyc/file')
+  @ApiOperation({ summary: 'Resolve a stored KYC document path to a viewable URL' })
+  resolveKycFile(@Query('path') path?: string) {
+    return this.merchants.resolveKycFileUrl(path ?? '');
   }
 
   @Get(':id')
@@ -130,6 +152,24 @@ export class MerchantsController {
   @Post(':id/kyc/onboarding')
   onboarding(@Param('id') id: string, @Body() body: OnboardingExtrasDto) {
     return this.merchants.saveOnboardingExtras(id, body);
+  }
+
+  @Post(':id/kyc/approve')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Approve KYC and activate merchant' })
+  approveKyc(@Param('id') id: string) {
+    return this.merchants.approveKyc(id);
+  }
+
+  @Post(':id/kyc/reject')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Reject a KYC application' })
+  rejectKyc(
+    @Param('id') id: string,
+    @Body() body: RejectKycDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.merchants.rejectKyc(id, body.reason, user.email);
   }
 
   @Post(':id/activate')

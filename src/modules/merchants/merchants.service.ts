@@ -139,31 +139,97 @@ export class MerchantsService implements OnModuleInit {
   }
 
   async list(filters?: { status?: string; search?: string }) {
-    const rows = await this.merchants.find({
-      relations: { kyc: true },
-      order: { createdAt: 'DESC' },
-    });
-    const searched = filters?.search
-      ? rows.filter((row) => {
-          const q = filters.search!.toLowerCase();
-          return (
-            row.businessName.toLowerCase().includes(q) ||
-            (row.email?.toLowerCase().includes(q) ?? false) ||
-            row.mobile.includes(q)
-          );
-        })
-      : rows;
-    const normalizedStatus = this.normalizeStatusFilter(filters?.status);
-    const filtered = normalizedStatus
-      ? searched.filter((row) => {
-          const aliases = this.statusAliases(row.status);
-          return (
-            row.status === normalizedStatus ||
-            aliases.includes(filters!.status!)
-          );
-        })
-      : searched;
+    const filtered = await this.findFilteredMerchants(filters);
     return Promise.all(filtered.map((row) => this.toView(row)));
+  }
+
+  async listKycVerifications(filters?: { status?: string; search?: string }) {
+    const filtered = await this.findFilteredMerchants(filters);
+    return filtered.map((row) => this.toKycVerificationListItem(row));
+  }
+
+  async getKycVerification(id: string) {
+    const merchant = await this.requireMerchant(id);
+    const images = await this.getKycPresignedUrls(id);
+    return {
+      id: merchant.id,
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      email: merchant.email,
+      address: merchant.address,
+      status: merchant.status,
+      tier: merchant.tier,
+      channel: merchant.channel,
+      createdAt: merchant.createdAt,
+      kycDetail: {
+        aadhaarLast4: merchant.kyc?.aadhaarLast4 ?? null,
+        panMasked: merchant.kyc?.panMasked ?? null,
+        aadhaarStatus: merchant.kyc?.aadhaarStatus ?? 'PENDING',
+        panStatus: merchant.kyc?.panStatus ?? 'PENDING',
+        aadhaarImageMatch: merchant.kyc?.aadhaarImageMatch ?? 'PENDING',
+        panImageMatch: merchant.kyc?.panImageMatch ?? 'PENDING',
+        shopType: merchant.kyc?.shopType ?? null,
+        latitude: merchant.kyc?.latitude ?? null,
+        longitude: merchant.kyc?.longitude ?? null,
+        agreementSignedAt: merchant.kyc?.agreementSignedAt ?? null,
+        images: {
+          aadhaarFront: images.aadhaarFront,
+          aadhaarBack: images.aadhaarBack,
+          pan: images.pan,
+          selfie: images.selfie,
+        },
+      },
+    };
+  }
+
+  async approveKyc(id: string) {
+    return this.activate(id);
+  }
+
+  async rejectKyc(id: string, reason?: string, actorEmail = 'ops') {
+    const merchant = await this.requireMerchant(id);
+    if (merchant.status === MerchantStatus.REJECTED) {
+      return this.toView(merchant);
+    }
+    if (merchant.status === MerchantStatus.ACTIVE) {
+      throw new NexaraError(
+        ErrorCodes.MERCHANT_INACTIVE,
+        'Active merchants cannot be rejected via KYC review; suspend them instead',
+        409,
+      );
+    }
+    merchant.status = MerchantStatus.REJECTED;
+    await this.merchants.save(merchant);
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'ADMIN',
+      action: 'MERCHANT_KYC_REJECTED',
+      merchantId: merchant.id,
+      details: reason ?? 'KYC application rejected',
+    });
+    await this.notifications.notifyUser({
+      merchantId: merchant.id,
+      organizationId: merchant.organizationId,
+      audience: 'MERCHANT',
+      title: 'KYC rejected',
+      body:
+        reason?.trim() ||
+        'Your KYC application was rejected. Please contact support or resubmit documents.',
+      type: 'MERCHANT_KYC_REJECTED',
+    });
+    return this.toView(merchant);
+  }
+
+  async resolveKycFileUrl(path: string) {
+    if (!path?.trim()) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'path query parameter is required',
+        400,
+      );
+    }
+    return { url: await this.presignStoredObject(path) };
   }
 
   async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
@@ -845,6 +911,80 @@ export class MerchantsService implements OnModuleInit {
       );
     }
     return merchant.organizationId;
+  }
+
+  private async findFilteredMerchants(filters?: {
+    status?: string;
+    search?: string;
+  }): Promise<Merchant[]> {
+    const rows = await this.merchants.find({
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+    const searched = filters?.search
+      ? rows.filter((row) => {
+          const q = filters.search!.toLowerCase();
+          return (
+            row.businessName.toLowerCase().includes(q) ||
+            row.contactPerson.toLowerCase().includes(q) ||
+            (row.email?.toLowerCase().includes(q) ?? false) ||
+            row.mobile.includes(q)
+          );
+        })
+      : rows;
+    const normalizedStatus = this.normalizeStatusFilter(filters?.status);
+    if (!normalizedStatus) {
+      return searched;
+    }
+    return searched.filter((row) => {
+      const aliases = this.statusAliases(row.status);
+      return (
+        row.status === normalizedStatus ||
+        aliases.includes(filters!.status!)
+      );
+    });
+  }
+
+  private toKycVerificationListItem(merchant: Merchant) {
+    const kyc = merchant.kyc;
+    const hasPanImage = Boolean(kyc?.panImagePath);
+    const hasAadhaarImage = Boolean(kyc?.aadhaarFrontPath);
+    const hasSelfie = Boolean(kyc?.selfiePath);
+    const hasLocation = Boolean(kyc?.latitude && kyc?.longitude);
+    const hasAgreement = Boolean(kyc?.agreementSignedAt);
+    const isComplete =
+      kyc?.aadhaarStatus === 'VERIFIED' &&
+      kyc?.panStatus === 'VERIFIED' &&
+      kyc?.aadhaarImageMatch === 'MATCHED' &&
+      kyc?.panImageMatch === 'MATCHED' &&
+      hasPanImage &&
+      hasAadhaarImage &&
+      hasSelfie &&
+      hasLocation &&
+      hasAgreement;
+
+    return {
+      id: merchant.id,
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      email: merchant.email,
+      status: merchant.status,
+      createdAt: merchant.createdAt,
+      kyc: {
+        panStatus: kyc?.panStatus ?? 'PENDING',
+        aadhaarStatus: kyc?.aadhaarStatus ?? 'PENDING',
+        panImageMatch: kyc?.panImageMatch ?? 'PENDING',
+        aadhaarImageMatch: kyc?.aadhaarImageMatch ?? 'PENDING',
+        hasPanImage,
+        hasAadhaarImage,
+        hasSelfie,
+        hasLocation,
+        hasAgreement,
+        isComplete,
+        submittedAt: kyc?.updatedAt ?? merchant.createdAt,
+      },
+    };
   }
 
   private assertKycAllowed(merchant: Merchant): void {

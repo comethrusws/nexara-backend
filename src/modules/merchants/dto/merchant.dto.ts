@@ -154,6 +154,12 @@ export class SuspendMerchantDto {
   reason?: string;
 }
 
+export class RejectKycDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
 export class PublicOnboardingDto {
   @ApiProperty({ example: '9876543210' })
   @IsString()
