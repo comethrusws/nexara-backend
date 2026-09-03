@@ -61,9 +61,29 @@ export class MerchantsController {
     return this.merchants.network();
   }
 
+  @Get('kyc-verifications')
+  @ApiOperation({ summary: 'List merchants pending KYC verification' })
+  listKycVerifications(
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.merchants.listKycVerifications({ status, search });
+  }
+
+  @Get('kyc-verifications/:id')
+  @ApiOperation({ summary: 'Get merchant KYC detail for verification' })
+  getKycVerificationDetail(@Param('id') id: string) {
+    return this.merchants.getKycVerificationDetail(id);
+  }
+
   @Get(':id')
   get(@Param('id') id: string) {
     return this.merchants.get(id);
+  }
+
+  @Get(':id/kyc/presigned-urls')
+  kycPresignedUrls(@Param('id') id: string) {
+    return this.merchants.getKycPresignedUrls(id);
   }
 
   @Patch(':id')
@@ -132,6 +152,22 @@ export class MerchantsController {
     return this.merchants.saveOnboardingExtras(id, body);
   }
 
+  @Post(':id/kyc/approve')
+  @ApiOperation({ summary: 'Approve and activate merchant after KYC review' })
+  approveKyc(@Param('id') id: string) {
+    return this.merchants.activate(id);
+  }
+
+  @Post(':id/kyc/reject')
+  @ApiOperation({ summary: 'Reject merchant KYC application' })
+  rejectKyc(
+    @Param('id') id: string,
+    @Body() body: SuspendMerchantDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.merchants.rejectKyc(id, body.reason, user.email);
+  }
+
   @Post(':id/activate')
   activate(@Param('id') id: string) {
     return this.merchants.activate(id);
@@ -154,41 +190,5 @@ export class MerchantsController {
   })
   resetMpin(@Param('id') id: string) {
     return this.users.clearMpinForMerchant(id);
-  }
-
-  @Get(':id/kyc/presigned-urls')
-  kycPresignedUrls(@Param('id') id: string) {
-    return this.merchants.getKycPresignedUrls(id);
-  }
-
-  @Get('kyc-verifications')
-  @ApiOperation({ summary: 'List merchants pending KYC verification' })
-  listKycVerifications(
-    @Query('status') status?: string,
-    @Query('search') search?: string,
-  ) {
-    return this.merchants.listKycVerifications({ status, search });
-  }
-
-  @Get('kyc-verifications/:id')
-  @ApiOperation({ summary: 'Get merchant KYC detail for verification' })
-  getKycVerificationDetail(@Param('id') id: string) {
-    return this.merchants.getKycVerificationDetail(id);
-  }
-
-  @Post(':id/kyc/approve')
-  @ApiOperation({ summary: 'Approve and activate merchant after KYC review' })
-  approveKyc(@Param('id') id: string) {
-    return this.merchants.activate(id);
-  }
-
-  @Post(':id/kyc/reject')
-  @ApiOperation({ summary: 'Reject merchant KYC application' })
-  rejectKyc(
-    @Param('id') id: string,
-    @Body() body: SuspendMerchantDto,
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.merchants.rejectKyc(id, body.reason, user.email);
   }
 }
