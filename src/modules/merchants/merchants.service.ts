@@ -214,6 +214,7 @@ export class MerchantsService implements OnModuleInit {
     const presignedUrls = await this.getKycPresignedUrls(id);
     return {
       ...this.toView(merchant),
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       kycDetail: {
         aadhaarLast4: merchant.kyc.aadhaarLast4,
         panMasked: merchant.kyc.panMasked,
@@ -258,6 +259,30 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
+  private resolveKycDisplayStatus(
+    merchant: Merchant,
+  ): 'PENDING_REVIEW' | 'NOT_STARTED' | 'APPROVED' | 'REJECTED' | 'SUSPENDED' {
+    if (merchant.status === MerchantStatus.ACTIVE) {
+      return 'APPROVED';
+    }
+    if (merchant.status === MerchantStatus.REJECTED) {
+      return 'REJECTED';
+    }
+    if (merchant.status === MerchantStatus.SUSPENDED) {
+      return 'SUSPENDED';
+    }
+    // CREATED / KYC_PENDING only count as "pending review" once the merchant
+    // has actually submitted KYC documents. A provisioned merchant that never
+    // submitted anything is "not started", even if onboarding flipped the raw
+    // status to KYC_PENDING mid-flow.
+    const hasSubmittedKyc = Boolean(
+      merchant.kyc?.panImagePath ||
+        merchant.kyc?.aadhaarFrontPath ||
+        merchant.kyc?.selfiePath,
+    );
+    return hasSubmittedKyc ? 'PENDING_REVIEW' : 'NOT_STARTED';
+  }
+
   private toKycVerificationView(merchant: Merchant) {
     const isComplete =
       merchant.kyc.panImagePath &&
@@ -274,6 +299,7 @@ export class MerchantsService implements OnModuleInit {
       mobile: merchant.mobile,
       email: merchant.email,
       status: merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       createdAt: merchant.createdAt,
       kyc: {
         panStatus: merchant.kyc.panStatus,
