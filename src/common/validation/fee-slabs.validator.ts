@@ -5,7 +5,7 @@ export interface FeeSlabRuleInput {
   maxAmount: number;
   flatFee?: number | string | null;
   percentFee?: number | string | null;
-  type?: 'FIXED' | 'PERCENTAGE' | string | null;
+  type?: unknown;
 }
 
 /**

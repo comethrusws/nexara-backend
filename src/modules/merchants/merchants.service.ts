@@ -13,9 +13,13 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { UserRole } from '../auth/auth.constants';
-import { FeeEngineService } from '../fee-engine/fee-engine.service';import { UsersService } from '../auth/users.service';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';
+import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Features, OrganizationType } from '../organizations/organization.constants';
+import {
+  Features,
+  OrganizationType,
+} from '../organizations/organization.constants';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -73,7 +77,8 @@ export class MerchantsService implements OnModuleInit {
         ? input.parentOrganizationId
         : admin.id;
     const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
-    const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
+    const contactPerson =
+      input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
     const email = input.email || '';
 
     const address = input.address || 'Pending Onboarding Address';
@@ -168,109 +173,69 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(await this.requireMerchant(id));
   }
 
-  async findByOrganizationId(
-    organizationId: string,
-  ): Promise<Merchant | null> {
+  async findByOrganizationId(organizationId: string): Promise<Merchant | null> {
     return this.merchants.findOne({ where: { organizationId } });
   }
 
   async list(filters?: { status?: string; search?: string }) {
-    const rows = await this.merchants.find({
-      relations: { kyc: true },
-      order: { createdAt: 'DESC' },
-    });
-    const searched = filters?.search
-      ? rows.filter((row) => {
-          const q = filters.search!.toLowerCase();
-          return (
-            row.businessName.toLowerCase().includes(q) ||
-            (row.email?.toLowerCase().includes(q) ?? false) ||
-            row.mobile.includes(q)
-          );
-        })
-      : rows;
-    const normalizedStatus = this.normalizeStatusFilter(filters?.status);
-    const filtered = normalizedStatus
-      ? searched.filter((row) => {
-          const aliases = this.statusAliases(row.status);
-          return (
-            row.status === normalizedStatus ||
-            aliases.includes(filters!.status!)
-          );
-        })
-      : searched;
+    const filtered = await this.findFilteredMerchants(filters);
     return Promise.all(filtered.map((row) => this.toView(row)));
   }
 
   async listKycVerifications(filters?: { status?: string; search?: string }) {
-    const rows = await this.merchants.find({
-      relations: { kyc: true },
-      order: { createdAt: 'DESC' },
-    });
-
-    const kycStatuses = [
-      MerchantStatus.CREATED,
-      MerchantStatus.KYC_PENDING,
-      MerchantStatus.ACTIVE,
-      MerchantStatus.REJECTED,
-    ];
-
-    let filtered = rows.filter((row) => kycStatuses.includes(row.status));
-
-    if (filters?.status && filters.status !== 'ALL') {
-      filtered = filtered.filter((row) => row.status === filters.status);
-    }
-
-    if (filters?.search) {
-      const q = filters.search.toLowerCase();
-      filtered = filtered.filter(
-        (row) =>
-          row.businessName.toLowerCase().includes(q) ||
-          row.mobile.includes(q) ||
-          (row.email?.toLowerCase().includes(q) ?? false),
-      );
-    }
-
-    return Promise.all(
-      filtered.map((row) => this.toKycVerificationView(row)),
-    );
+    const filtered = await this.findFilteredMerchants(filters);
+    return filtered.map((row) => this.toKycVerificationListItem(row));
   }
 
-  async getKycVerificationDetail(id: string) {
+  async getKycVerification(id: string) {
     const merchant = await this.requireMerchant(id);
-    const presignedUrls = await this.getKycPresignedUrls(id);
+    const images = await this.getKycPresignedUrls(id);
     return {
-      ...this.toView(merchant),
+      id: merchant.id,
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      email: merchant.email,
+      address: merchant.address,
+      status: merchant.status,
       displayStatus: this.resolveKycDisplayStatus(merchant),
+      tier: merchant.tier,
+      channel: merchant.channel,
+      createdAt: merchant.createdAt,
       kycDetail: {
-        aadhaarLast4: merchant.kyc.aadhaarLast4,
-        panMasked: merchant.kyc.panMasked,
-        aadhaarStatus: merchant.kyc.aadhaarStatus,
-        panStatus: merchant.kyc.panStatus,
-        aadhaarImageMatch: merchant.kyc.aadhaarImageMatch,
-        panImageMatch: merchant.kyc.panImageMatch,
-        shopType: merchant.kyc.shopType,
-        latitude: merchant.kyc.latitude,
-        longitude: merchant.kyc.longitude,
-        agreementSignedAt: merchant.kyc.agreementSignedAt,
-        images: presignedUrls,
+        aadhaarLast4: merchant.kyc?.aadhaarLast4 ?? null,
+        panMasked: merchant.kyc?.panMasked ?? null,
+        aadhaarStatus: merchant.kyc?.aadhaarStatus ?? 'PENDING',
+        panStatus: merchant.kyc?.panStatus ?? 'PENDING',
+        aadhaarImageMatch: merchant.kyc?.aadhaarImageMatch ?? 'PENDING',
+        panImageMatch: merchant.kyc?.panImageMatch ?? 'PENDING',
+        shopType: merchant.kyc?.shopType ?? null,
+        latitude: merchant.kyc?.latitude ?? null,
+        longitude: merchant.kyc?.longitude ?? null,
+        agreementSignedAt: merchant.kyc?.agreementSignedAt ?? null,
+        images: {
+          aadhaarFront: images.aadhaarFront,
+          aadhaarBack: images.aadhaarBack,
+          pan: images.pan,
+          selfie: images.selfie,
+        },
       },
     };
   }
 
-  async rejectKyc(
-    id: string,
-    reason?: string,
-    actorEmail = 'ops',
-  ) {
+  async approveKyc(id: string) {
+    return this.activate(id);
+  }
+
+  async rejectKyc(id: string, reason?: string, actorEmail = 'ops') {
     const merchant = await this.requireMerchant(id);
-    if (
-      merchant.status !== MerchantStatus.KYC_PENDING &&
-      merchant.status !== MerchantStatus.CREATED
-    ) {
+    if (merchant.status === MerchantStatus.REJECTED) {
+      return this.toView(merchant);
+    }
+    if (merchant.status === MerchantStatus.ACTIVE) {
       throw new NexaraError(
         ErrorCodes.MERCHANT_INACTIVE,
-        'Only merchants with pending KYC can be rejected',
+        'Active merchants cannot be rejected via KYC review; suspend them instead',
         409,
       );
     }
@@ -281,7 +246,17 @@ export class MerchantsService implements OnModuleInit {
       actorRole: 'ADMIN',
       action: 'MERCHANT_KYC_REJECTED',
       merchantId: merchant.id,
-      details: reason ?? 'KYC application rejected by ops',
+      details: reason ?? 'KYC application rejected',
+    });
+    await this.notifications.notifyUser({
+      merchantId: merchant.id,
+      organizationId: merchant.organizationId,
+      audience: 'MERCHANT',
+      title: 'KYC rejected',
+      body:
+        reason?.trim() ||
+        'Your KYC application was rejected. Please contact support or resubmit documents.',
+      type: 'MERCHANT_KYC_REJECTED',
     });
     return this.toView(merchant);
   }
@@ -304,44 +279,56 @@ export class MerchantsService implements OnModuleInit {
     // status to KYC_PENDING mid-flow.
     const hasSubmittedKyc = Boolean(
       merchant.kyc?.panImagePath ||
-        merchant.kyc?.aadhaarFrontPath ||
-        merchant.kyc?.selfiePath,
+      merchant.kyc?.aadhaarFrontPath ||
+      merchant.kyc?.selfiePath,
     );
     return hasSubmittedKyc ? 'PENDING_REVIEW' : 'NOT_STARTED';
   }
 
-  private toKycVerificationView(merchant: Merchant) {
-    const isComplete =
-      merchant.kyc.panImagePath &&
-      merchant.kyc.aadhaarFrontPath &&
-      merchant.kyc.selfiePath &&
-      merchant.kyc.latitude &&
-      merchant.kyc.longitude &&
-      merchant.kyc.agreementSignedAt;
-
-    return {
-      id: merchant.id,
-      businessName: merchant.businessName,
-      contactPerson: merchant.contactPerson,
-      mobile: merchant.mobile,
-      email: merchant.email,
-      status: merchant.status,
-      displayStatus: this.resolveKycDisplayStatus(merchant),
-      createdAt: merchant.createdAt,
-      kyc: {
-        panStatus: merchant.kyc.panStatus,
-        aadhaarStatus: merchant.kyc.aadhaarStatus,
-        panImageMatch: merchant.kyc.panImageMatch,
-        aadhaarImageMatch: merchant.kyc.aadhaarImageMatch,
-        hasPanImage: Boolean(merchant.kyc.panImagePath),
-        hasAadhaarImage: Boolean(merchant.kyc.aadhaarFrontPath),
-        hasSelfie: Boolean(merchant.kyc.selfiePath),
-        hasLocation: Boolean(merchant.kyc.latitude && merchant.kyc.longitude),
-        hasAgreement: Boolean(merchant.kyc.agreementSignedAt),
-        isComplete: Boolean(isComplete),
-        submittedAt: merchant.kyc.updatedAt,
-      },
-    };
+  /**
+   * Load a stored KYC document for admin viewing. The path is resolved to a
+   * storage key and strictly scoped to the `kyc/` namespace so a crafted
+   * query parameter can never escape into other objects.
+   */
+  async streamKycFile(
+    path: string,
+  ): Promise<{ body: Buffer; contentType: string }> {
+    if (!path?.trim()) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'path query parameter is required',
+        400,
+      );
+    }
+    const key = this.extractStorageKey(path.trim()).split(/[?#]/)[0];
+    const segments = key.split('/').filter(Boolean);
+    if (
+      segments.length < 2 ||
+      segments[0] !== 'kyc' ||
+      segments.some((segment) => segment === '..' || segment.includes('\\'))
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'path must reference a stored KYC document',
+        400,
+      );
+    }
+    if (typeof this.storage.getObject !== 'function') {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Document streaming is not supported by the configured storage driver',
+        500,
+      );
+    }
+    try {
+      return await this.storage.getObject(key);
+    } catch {
+      throw new NexaraError(
+        ErrorCodes.KYC_DOCUMENT_NOT_FOUND,
+        'KYC document was not found',
+        404,
+      );
+    }
   }
 
   async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
@@ -379,7 +366,8 @@ export class MerchantsService implements OnModuleInit {
       merchant.channel = input.channel;
     }
     if (input.distributorCommissionPercent !== undefined) {
-      merchant.distributorCommissionPercent = input.distributorCommissionPercent;
+      merchant.distributorCommissionPercent =
+        input.distributorCommissionPercent;
     }
     if (input.superDistributorCommissionPercent !== undefined) {
       merchant.superDistributorCommissionPercent =
@@ -610,9 +598,7 @@ export class MerchantsService implements OnModuleInit {
     };
     const result: Record<string, string | null> = {};
     for (const [label, stored] of Object.entries(paths)) {
-      result[label] = stored
-        ? await this.presignStoredObject(stored)
-        : null;
+      result[label] = stored ? await this.presignStoredObject(stored) : null;
     }
     return result;
   }
@@ -736,10 +722,7 @@ export class MerchantsService implements OnModuleInit {
     const existingUser = await this.users.findByMobile(mobile);
 
     if (existingUser) {
-      if (
-        existingUser.role !== UserRole.MERCHANT ||
-        !existingUser.merchantId
-      ) {
+      if (existingUser.role !== UserRole.MERCHANT || !existingUser.merchantId) {
         throw new NexaraError(
           ErrorCodes.INVALID_REQUEST,
           'This mobile number is already linked to another account',
@@ -923,7 +906,11 @@ export class MerchantsService implements OnModuleInit {
   async storeKycFiles(
     id: string,
     files: {
-      aadhaarFront?: { originalname: string; buffer: Buffer; mimetype?: string };
+      aadhaarFront?: {
+        originalname: string;
+        buffer: Buffer;
+        mimetype?: string;
+      };
       aadhaarBack?: { originalname: string; buffer: Buffer; mimetype?: string };
       pan?: { originalname: string; buffer: Buffer; mimetype?: string };
       selfie?: { originalname: string; buffer: Buffer; mimetype?: string };
@@ -933,8 +920,7 @@ export class MerchantsService implements OnModuleInit {
     this.assertKycAllowed(merchant);
     const save = async (
       file:
-        | { originalname: string; buffer: Buffer; mimetype?: string }
-        | undefined,
+        { originalname: string; buffer: Buffer; mimetype?: string } | undefined,
       name: string,
     ) => {
       if (!file) {
@@ -1005,8 +991,13 @@ export class MerchantsService implements OnModuleInit {
   private async refreshDocumentMatch(merchant: Merchant): Promise<void> {
     const mismatchName = (path: string | null) =>
       (path ?? '').toLowerCase().includes('mismatch');
-    if (merchant.kyc.aadhaarStatus === 'VERIFIED' && merchant.kyc.aadhaarFrontPath) {
-      merchant.kyc.aadhaarImageMatch = mismatchName(merchant.kyc.aadhaarFrontPath)
+    if (
+      merchant.kyc.aadhaarStatus === 'VERIFIED' &&
+      merchant.kyc.aadhaarFrontPath
+    ) {
+      merchant.kyc.aadhaarImageMatch = mismatchName(
+        merchant.kyc.aadhaarFrontPath,
+      )
         ? 'MISMATCH'
         : 'MATCHED';
     }
@@ -1055,8 +1046,7 @@ export class MerchantsService implements OnModuleInit {
     contentTypeHint?: string,
   ): { buffer: Buffer; contentType: string; extension: string } {
     const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(value.trim());
-    const contentType =
-      dataUrl?.[1] ?? contentTypeHint ?? 'image/jpeg';
+    const contentType = dataUrl?.[1] ?? contentTypeHint ?? 'image/jpeg';
     const base64 = dataUrl?.[2] ?? value.replace(/^base64,/i, '').trim();
     const buffer = Buffer.from(base64, 'base64');
     if (!buffer.length) {
@@ -1065,12 +1055,11 @@ export class MerchantsService implements OnModuleInit {
         'selfieBase64 is empty or invalid',
       );
     }
-    const extension =
-      contentType.includes('png')
-        ? '.png'
-        : contentType.includes('webp')
-          ? '.webp'
-          : '.jpg';
+    const extension = contentType.includes('png')
+      ? '.png'
+      : contentType.includes('webp')
+        ? '.webp'
+        : '.jpg';
     return { buffer, contentType, extension };
   }
 
@@ -1083,6 +1072,80 @@ export class MerchantsService implements OnModuleInit {
       );
     }
     return merchant.organizationId;
+  }
+
+  private async findFilteredMerchants(filters?: {
+    status?: string;
+    search?: string;
+  }): Promise<Merchant[]> {
+    const rows = await this.merchants.find({
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+    const searched = filters?.search
+      ? rows.filter((row) => {
+          const q = filters.search!.toLowerCase();
+          return (
+            row.businessName.toLowerCase().includes(q) ||
+            row.contactPerson.toLowerCase().includes(q) ||
+            (row.email?.toLowerCase().includes(q) ?? false) ||
+            row.mobile.includes(q)
+          );
+        })
+      : rows;
+    const normalizedStatus = this.normalizeStatusFilter(filters?.status);
+    if (!normalizedStatus) {
+      return searched;
+    }
+    return searched.filter((row) => {
+      const aliases = this.statusAliases(row.status);
+      return (
+        row.status === normalizedStatus || aliases.includes(filters!.status!)
+      );
+    });
+  }
+
+  private toKycVerificationListItem(merchant: Merchant) {
+    const kyc = merchant.kyc;
+    const hasPanImage = Boolean(kyc?.panImagePath);
+    const hasAadhaarImage = Boolean(kyc?.aadhaarFrontPath);
+    const hasSelfie = Boolean(kyc?.selfiePath);
+    const hasLocation = Boolean(kyc?.latitude && kyc?.longitude);
+    const hasAgreement = Boolean(kyc?.agreementSignedAt);
+    const isComplete =
+      kyc?.aadhaarStatus === 'VERIFIED' &&
+      kyc?.panStatus === 'VERIFIED' &&
+      kyc?.aadhaarImageMatch === 'MATCHED' &&
+      kyc?.panImageMatch === 'MATCHED' &&
+      hasPanImage &&
+      hasAadhaarImage &&
+      hasSelfie &&
+      hasLocation &&
+      hasAgreement;
+
+    return {
+      id: merchant.id,
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      email: merchant.email,
+      status: merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
+      createdAt: merchant.createdAt,
+      kyc: {
+        panStatus: kyc?.panStatus ?? 'PENDING',
+        aadhaarStatus: kyc?.aadhaarStatus ?? 'PENDING',
+        panImageMatch: kyc?.panImageMatch ?? 'PENDING',
+        aadhaarImageMatch: kyc?.aadhaarImageMatch ?? 'PENDING',
+        hasPanImage,
+        hasAadhaarImage,
+        hasSelfie,
+        hasLocation,
+        hasAgreement,
+        isComplete,
+        submittedAt: kyc?.updatedAt ?? merchant.createdAt,
+      },
+    };
   }
 
   private assertKycAllowed(merchant: Merchant): void {
@@ -1120,7 +1183,7 @@ export class MerchantsService implements OnModuleInit {
     const entityType =
       entitlements?.type === 'MERCHANT'
         ? 'RETAILER'
-        : entitlements?.type ?? 'RETAILER';
+        : (entitlements?.type ?? 'RETAILER');
     const dailySpent = await this.currentDailySpent(merchant.id);
     const enabledServices = this.parseEnabledServices(
       merchant.enabledServicesJson,

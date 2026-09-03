@@ -7,8 +7,8 @@ import { FeeEngineService } from './fee-engine.service';
 describe('FeeEngineService', () => {
   const configs = {
     findOne: jest.fn(),
-    create: jest.fn(),
-    save: jest.fn(),
+    create: jest.fn((value: Partial<PlatformFeeConfig>) => value),
+    save: jest.fn((value: PlatformFeeConfig) => value),
   };
   const audit = { record: jest.fn() };
 
@@ -16,8 +16,10 @@ describe('FeeEngineService', () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
-    configs.create.mockImplementation((value) => value);
-    configs.save.mockImplementation(async (value) => value);
+    configs.create.mockImplementation(
+      (value: Partial<PlatformFeeConfig>) => value,
+    );
+    configs.save.mockImplementation((value: PlatformFeeConfig) => value);
     const module = await Test.createTestingModule({
       providers: [
         FeeEngineService,
@@ -69,7 +71,10 @@ describe('FeeEngineService', () => {
     );
 
     await expect(
-      service.updateConfig({ standardSlabsJson: 'not-json' }, 'admin@nexara.test'),
+      service.updateConfig(
+        { standardSlabsJson: 'not-json' },
+        'admin@nexara.test',
+      ),
     ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
   });
 });

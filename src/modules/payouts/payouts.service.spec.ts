@@ -107,7 +107,7 @@ describe('PayoutsService', () => {
     });
     fineract.blockFunds.mockResolvedValue({ fineractTransactionId: 99 });
     payouts.create.mockImplementation((value: Payout) => value);
-    payouts.save.mockImplementation(async (value: Payout) => ({
+    payouts.save.mockImplementation((value: Payout) => ({
       ...value,
       id: value.id ?? 'payout-1',
     }));
@@ -129,9 +129,9 @@ describe('PayoutsService', () => {
       { id: 'org-dist', type: 'DISTRIBUTOR' },
       { id: 'org-1', type: 'MERCHANT' },
     ]);
-    merchants.findByOrganizationId.mockImplementation(
-      async (orgId: string) => ({ id: `merchant-${orgId}` }),
-    );
+    merchants.findByOrganizationId.mockImplementation((orgId: string) => ({
+      id: `merchant-${orgId}`,
+    }));
     wallets.creditWallet.mockResolvedValue({});
 
     const result = await service.create({
@@ -151,7 +151,10 @@ describe('PayoutsService', () => {
       amount: '20011.80',
       reason: 'Payout ORD-1',
     });
-    expect(organizations.assertPayoutRail).toHaveBeenCalledWith('org-1', 'IMPS');
+    expect(organizations.assertPayoutRail).toHaveBeenCalledWith(
+      'org-1',
+      'IMPS',
+    );
     expect(banks.get).toHaveBeenCalledWith('MOCK');
     expect(fineract.finalizeSuccessfulPayout).toHaveBeenCalled();
     expect(result.status).toBe('SUCCESS');
@@ -188,8 +191,20 @@ describe('PayoutsService', () => {
       feeValue: '0.00',
       gstPercent: '18.00',
       feeSlabsJson: JSON.stringify([
-        { minAmount: 100, maxAmount: 1000, flatFee: 6, percentFee: 0.9, type: 'FIXED' },
-        { minAmount: 1000, maxAmount: 2000, flatFee: 10, percentFee: 1.0, type: 'PERCENTAGE' },
+        {
+          minAmount: 100,
+          maxAmount: 1000,
+          flatFee: 6,
+          percentFee: 0.9,
+          type: 'FIXED',
+        },
+        {
+          minAmount: 1000,
+          maxAmount: 2000,
+          flatFee: 10,
+          percentFee: 1.0,
+          type: 'PERCENTAGE',
+        },
       ]),
       channel: 'STANDARD',
     });
@@ -205,7 +220,7 @@ describe('PayoutsService', () => {
     });
     fineract.blockFunds.mockResolvedValue({ fineractTransactionId: 99 });
     payouts.create.mockImplementation((value: Payout) => value);
-    payouts.save.mockImplementation(async (value: Payout) => ({
+    payouts.save.mockImplementation((value: Payout) => ({
       ...value,
       id: value.id ?? 'payout-1',
     }));

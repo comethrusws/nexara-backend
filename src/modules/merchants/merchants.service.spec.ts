@@ -34,6 +34,16 @@ describe('MerchantsService', () => {
   const wallets = {
     openWallet: jest.fn(),
   };
+  const storage = {
+    putObject: jest.fn(({ key }: { key: string }) => ({
+      key,
+      url: `s3://test/${key}`,
+    })),
+    getObject: jest.fn((key: string) => ({
+      body: Buffer.from(key),
+      contentType: 'image/jpeg',
+    })),
+  };
   const organizations = {
     ensureSeeded: jest.fn(),
     createMerchantOrganization: jest.fn(),
@@ -84,25 +94,46 @@ describe('MerchantsService', () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
+    storage.putObject.mockImplementation(({ key }: { key: string }) => ({
+      key,
+      url: `s3://test/${key}`,
+    }));
+    storage.getObject.mockImplementation((key: string) => ({
+      body: Buffer.from(key),
+      contentType: 'image/jpeg',
+    }));
     const module = await Test.createTestingModule({
       providers: [
         MerchantsService,
         { provide: getRepositoryToken(Merchant), useValue: merchants },
         { provide: getRepositoryToken(MerchantKyc), useValue: kycRecords },
-        { provide: getRepositoryToken(Payout), useValue: { find: jest.fn().mockResolvedValue([]) } },
+        {
+          provide: getRepositoryToken(Payout),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
         { provide: KYC_PORT, useValue: kyc },
         {
           provide: OBJECT_STORAGE,
-          useValue: { putObject: jest.fn(async ({ key }: { key: string }) => ({ key, url: `s3://test/${key}` })) },
+          useValue: storage,
         },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn((key: string) => (key === 'kyc.provider' ? 'mock' : undefined)) },
+          useValue: {
+            get: jest.fn((key: string) =>
+              key === 'kyc.provider' ? 'mock' : undefined,
+            ),
+          },
         },
         { provide: WalletService, useValue: wallets },
         { provide: OrganizationsService, useValue: organizations },
-        { provide: UsersService, useValue: { createMerchantUser: jest.fn(), findByMobile: jest.fn() } },
-        { provide: AuthService, useValue: { assertRecentOnboardingOtp: jest.fn() } },
+        {
+          provide: UsersService,
+          useValue: { createMerchantUser: jest.fn(), findByMobile: jest.fn() },
+        },
+        {
+          provide: AuthService,
+          useValue: { assertRecentOnboardingOtp: jest.fn() },
+        },
         {
           provide: NotificationsService,
           useValue: { notifyUser: jest.fn() },
@@ -147,5 +178,35 @@ describe('MerchantsService', () => {
       code: ErrorCodes.KYC_INCOMPLETE,
     });
     expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
+  it('streams a KYC document scoped to the kyc namespace', async () => {
+    const file = await service.streamKycFile('s3://test/kyc/m1/pan.jpg');
+
+    expect(storage.getObject).toHaveBeenCalledWith('kyc/m1/pan.jpg');
+    expect(file.contentType).toBe('image/jpeg');
+  });
+
+  it('rejects KYC file paths outside the kyc namespace', async () => {
+    await expect(service.streamKycFile('')).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_REQUEST,
+    });
+    await expect(
+      service.streamKycFile('s3://test/kyc/../secrets/env'),
+    ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST });
+    await expect(
+      service.streamKycFile('s3://test/other/m1/pan.jpg'),
+    ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST });
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing KYC document to 404', async () => {
+    storage.getObject.mockImplementationOnce(() => {
+      throw new Error('NoSuchKey');
+    });
+
+    await expect(
+      service.streamKycFile('s3://test/kyc/m1/missing.jpg'),
+    ).rejects.toMatchObject({ code: ErrorCodes.KYC_DOCUMENT_NOT_FOUND });
   });
 });

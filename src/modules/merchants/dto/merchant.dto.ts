@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
@@ -12,8 +12,16 @@ import {
   Matches,
   ValidateNested,
 } from 'class-validator';
-import { MPIN_PATTERN, MPIN_VALIDATION_MESSAGE } from '../../../common/dto/mpin';
-import { FeeType, MerchantChannel, MerchantStatus, MerchantTier } from '../merchant.enums';
+import {
+  MPIN_PATTERN,
+  MPIN_VALIDATION_MESSAGE,
+} from '../../../common/dto/mpin';
+import {
+  FeeType,
+  MerchantChannel,
+  MerchantStatus,
+  MerchantTier,
+} from '../merchant.enums';
 
 const AMOUNT = /^\d+(\.\d{1,2})?$/;
 const PERCENT = /^\d+(\.\d{1,4})?$/;
@@ -65,6 +73,7 @@ export class CreateMerchantDto {
   @Matches(MOBILE, { message: 'mobile must be 10 digits' })
   mobile: string;
 
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsOptional()
   @IsEmail()
   email?: string;
@@ -154,6 +163,12 @@ export class SuspendMerchantDto {
   reason?: string;
 }
 
+export class RejectKycDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
 export class PublicOnboardingDto {
   @ApiProperty({ example: '9876543210' })
   @IsString()
@@ -179,7 +194,9 @@ export class PublicOnboardingDto {
   @IsNotEmpty()
   address: string;
 
-  @ApiPropertyOptional({ description: 'Login password; auto-generated if omitted' })
+  @ApiPropertyOptional({
+    description: 'Login password; auto-generated if omitted',
+  })
   @IsOptional()
   @IsString()
   password?: string;

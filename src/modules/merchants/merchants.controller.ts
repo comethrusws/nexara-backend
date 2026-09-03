@@ -6,6 +6,8 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,6 +20,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -26,6 +29,7 @@ import { UsersService } from '../auth/users.service';
 import {
   CreateMerchantDto,
   OnboardingExtrasDto,
+  RejectKycDto,
   SuspendMerchantDto,
   UpdateMerchantDto,
   VerifyAadhaarDto,
@@ -49,10 +53,7 @@ export class MerchantsController {
   }
 
   @Get()
-  list(
-    @Query('status') status?: string,
-    @Query('search') search?: string,
-  ) {
+  list(@Query('status') status?: string, @Query('search') search?: string) {
     return this.merchants.list({ status, search });
   }
 
@@ -62,7 +63,7 @@ export class MerchantsController {
   }
 
   @Get('kyc-verifications')
-  @ApiOperation({ summary: 'List merchants pending KYC verification' })
+  @ApiOperation({ summary: 'List merchants for KYC review queue' })
   listKycVerifications(
     @Query('status') status?: string,
     @Query('search') search?: string,
@@ -71,9 +72,24 @@ export class MerchantsController {
   }
 
   @Get('kyc-verifications/:id')
-  @ApiOperation({ summary: 'Get merchant KYC detail for verification' })
-  getKycVerificationDetail(@Param('id') id: string) {
-    return this.merchants.getKycVerificationDetail(id);
+  @ApiOperation({ summary: 'Get KYC verification detail with document URLs' })
+  getKycVerification(@Param('id') id: string) {
+    return this.merchants.getKycVerification(id);
+  }
+
+  @Get('kyc/file')
+  @ApiOperation({ summary: 'Stream a stored KYC document' })
+  async streamKycFile(
+    @Query('path') path: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const file = await this.merchants.streamKycFile(path ?? '');
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Length': String(file.body.length),
+      'Cache-Control': 'private, max-age=3600',
+    });
+    return new StreamableFile(file.body);
   }
 
   @Get(':id')
@@ -153,16 +169,18 @@ export class MerchantsController {
   }
 
   @Post(':id/kyc/approve')
-  @ApiOperation({ summary: 'Approve and activate merchant after KYC review' })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Approve KYC and activate merchant' })
   approveKyc(@Param('id') id: string) {
-    return this.merchants.activate(id);
+    return this.merchants.approveKyc(id);
   }
 
   @Post(':id/kyc/reject')
-  @ApiOperation({ summary: 'Reject merchant KYC application' })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Reject a KYC application' })
   rejectKyc(
     @Param('id') id: string,
-    @Body() body: SuspendMerchantDto,
+    @Body() body: RejectKycDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.merchants.rejectKyc(id, body.reason, user.email);
