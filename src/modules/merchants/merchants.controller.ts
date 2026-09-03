@@ -6,6 +6,8 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,6 +20,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -50,10 +53,7 @@ export class MerchantsController {
   }
 
   @Get()
-  list(
-    @Query('status') status?: string,
-    @Query('search') search?: string,
-  ) {
+  list(@Query('status') status?: string, @Query('search') search?: string) {
     return this.merchants.list({ status, search });
   }
 
@@ -78,14 +78,28 @@ export class MerchantsController {
   }
 
   @Get('kyc/file')
-  @ApiOperation({ summary: 'Resolve a stored KYC document path to a viewable URL' })
-  resolveKycFile(@Query('path') path?: string) {
-    return this.merchants.resolveKycFileUrl(path ?? '');
+  @ApiOperation({ summary: 'Stream a stored KYC document' })
+  async streamKycFile(
+    @Query('path') path: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const file = await this.merchants.streamKycFile(path ?? '');
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Length': String(file.body.length),
+      'Cache-Control': 'private, max-age=3600',
+    });
+    return new StreamableFile(file.body);
   }
 
   @Get(':id')
   get(@Param('id') id: string) {
     return this.merchants.get(id);
+  }
+
+  @Get(':id/kyc/presigned-urls')
+  kycPresignedUrls(@Param('id') id: string) {
+    return this.merchants.getKycPresignedUrls(id);
   }
 
   @Patch(':id')
@@ -194,10 +208,5 @@ export class MerchantsController {
   })
   resetMpin(@Param('id') id: string) {
     return this.users.clearMpinForMerchant(id);
-  }
-
-  @Get(':id/kyc/presigned-urls')
-  kycPresignedUrls(@Param('id') id: string) {
-    return this.merchants.getKycPresignedUrls(id);
   }
 }

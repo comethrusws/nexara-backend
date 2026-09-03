@@ -363,6 +363,10 @@ export class OrganizationsService implements OnModuleInit {
     await this.assertFeature(organizationId, railFeature(paymentMode));
   }
 
+  async ancestors(organizationId: string): Promise<Organization[]> {
+    return this.chain(organizationId);
+  }
+
   async assertAncestorsActive(organizationId: string): Promise<void> {
     const chain = await this.chain(organizationId);
     const blocked = chain.find(

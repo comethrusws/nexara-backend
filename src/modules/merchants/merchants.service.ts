@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, In, Not, Repository } from 'typeorm';
 import { Payout, PayoutStatus } from '../payouts/entities/payout.entity';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
+import { validateFeeSlabsJson } from '../../common/validation/fee-slabs.validator';
 import { KYC_PORT, type KycPort } from '../../integrations/kyc/kyc.types';
 import {
   OBJECT_STORAGE,
@@ -12,9 +13,13 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { UserRole } from '../auth/auth.constants';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Features, OrganizationType } from '../organizations/organization.constants';
+import {
+  Features,
+  OrganizationType,
+} from '../organizations/organization.constants';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -44,6 +49,7 @@ export class MerchantsService implements OnModuleInit {
     private readonly auth: AuthService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
+    private readonly feeEngine: FeeEngineService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -66,9 +72,13 @@ export class MerchantsService implements OnModuleInit {
 
   async create(input: CreateMerchantDto) {
     const admin = await this.organizations.ensureSeeded();
-    const parentId = input.parentOrganizationId ?? admin.id;
+    const parentId =
+      input.parentOrganizationId && input.parentOrganizationId.trim()
+        ? input.parentOrganizationId
+        : admin.id;
     const businessName = input.businessName || `Merchant (+91 ${input.mobile})`;
-    const contactPerson = input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
+    const contactPerson =
+      input.contactPerson || `Mobile Contact (+91 ${input.mobile})`;
     const email = input.email || '';
 
     const address = input.address || 'Pending Onboarding Address';
@@ -81,6 +91,19 @@ export class MerchantsService implements OnModuleInit {
       email: email ?? undefined,
       organizationType: this.mapEntityType(input.entityType),
     });
+    // New merchants inherit the platform rate card; admins can override
+    // per-merchant afterwards on the merchant detail page.
+    let platformRates: {
+      distributorCommissionPercent?: string;
+      superDistributorCommissionPercent?: string;
+      masterDistributorCommissionPercent?: string;
+      gstPercent?: string;
+    } | null = null;
+    try {
+      platformRates = await this.feeEngine.getConfig();
+    } catch {
+      platformRates = null;
+    }
     const merchant = this.merchants.create({
       businessName,
       contactPerson,
@@ -93,7 +116,19 @@ export class MerchantsService implements OnModuleInit {
       tier: input.tier ?? MerchantTier.SILVER,
       feeType: input.feeType ?? FeeType.FIXED,
       feeValue: input.feeValue ?? '10.00',
-      gstPercent: input.gstPercent ?? '18.00',
+      gstPercent: input.gstPercent ?? platformRates?.gstPercent ?? '18.00',
+      distributorCommissionPercent:
+        input.distributorCommissionPercent ??
+        platformRates?.distributorCommissionPercent ??
+        '0.20',
+      superDistributorCommissionPercent:
+        input.superDistributorCommissionPercent ??
+        platformRates?.superDistributorCommissionPercent ??
+        '0.025',
+      masterDistributorCommissionPercent:
+        input.masterDistributorCommissionPercent ??
+        platformRates?.masterDistributorCommissionPercent ??
+        '0.010',
       enabledServicesJson: JSON.stringify(
         input.services ?? {
           payouts: true,
@@ -138,6 +173,10 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(await this.requireMerchant(id));
   }
 
+  async findByOrganizationId(organizationId: string): Promise<Merchant | null> {
+    return this.merchants.findOne({ where: { organizationId } });
+  }
+
   async list(filters?: { status?: string; search?: string }) {
     const filtered = await this.findFilteredMerchants(filters);
     return Promise.all(filtered.map((row) => this.toView(row)));
@@ -159,6 +198,7 @@ export class MerchantsService implements OnModuleInit {
       email: merchant.email,
       address: merchant.address,
       status: merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       tier: merchant.tier,
       channel: merchant.channel,
       createdAt: merchant.createdAt,
@@ -221,7 +261,38 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async resolveKycFileUrl(path: string) {
+  private resolveKycDisplayStatus(
+    merchant: Merchant,
+  ): 'PENDING_REVIEW' | 'NOT_STARTED' | 'APPROVED' | 'REJECTED' | 'SUSPENDED' {
+    if (merchant.status === MerchantStatus.ACTIVE) {
+      return 'APPROVED';
+    }
+    if (merchant.status === MerchantStatus.REJECTED) {
+      return 'REJECTED';
+    }
+    if (merchant.status === MerchantStatus.SUSPENDED) {
+      return 'SUSPENDED';
+    }
+    // CREATED / KYC_PENDING only count as "pending review" once the merchant
+    // has actually submitted KYC documents. A provisioned merchant that never
+    // submitted anything is "not started", even if onboarding flipped the raw
+    // status to KYC_PENDING mid-flow.
+    const hasSubmittedKyc = Boolean(
+      merchant.kyc?.panImagePath ||
+      merchant.kyc?.aadhaarFrontPath ||
+      merchant.kyc?.selfiePath,
+    );
+    return hasSubmittedKyc ? 'PENDING_REVIEW' : 'NOT_STARTED';
+  }
+
+  /**
+   * Load a stored KYC document for admin viewing. The path is resolved to a
+   * storage key and strictly scoped to the `kyc/` namespace so a crafted
+   * query parameter can never escape into other objects.
+   */
+  async streamKycFile(
+    path: string,
+  ): Promise<{ body: Buffer; contentType: string }> {
     if (!path?.trim()) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
@@ -229,7 +300,35 @@ export class MerchantsService implements OnModuleInit {
         400,
       );
     }
-    return { url: await this.presignStoredObject(path) };
+    const key = this.extractStorageKey(path.trim()).split(/[?#]/)[0];
+    const segments = key.split('/').filter(Boolean);
+    if (
+      segments.length < 2 ||
+      segments[0] !== 'kyc' ||
+      segments.some((segment) => segment === '..' || segment.includes('\\'))
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'path must reference a stored KYC document',
+        400,
+      );
+    }
+    if (typeof this.storage.getObject !== 'function') {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Document streaming is not supported by the configured storage driver',
+        500,
+      );
+    }
+    try {
+      return await this.storage.getObject(key);
+    } catch {
+      throw new NexaraError(
+        ErrorCodes.KYC_DOCUMENT_NOT_FOUND,
+        'KYC document was not found',
+        404,
+      );
+    }
   }
 
   async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
@@ -257,6 +356,27 @@ export class MerchantsService implements OnModuleInit {
       merchant.feeType = FeeType.PERCENTAGE;
       merchant.feeValue = input.percentFee;
     }
+    if (input.feeSlabsJson !== undefined) {
+      if (input.feeSlabsJson) {
+        this.validateFeeSlabs(input.feeSlabsJson);
+      }
+      merchant.feeSlabsJson = input.feeSlabsJson || null;
+    }
+    if (input.channel) {
+      merchant.channel = input.channel;
+    }
+    if (input.distributorCommissionPercent !== undefined) {
+      merchant.distributorCommissionPercent =
+        input.distributorCommissionPercent;
+    }
+    if (input.superDistributorCommissionPercent !== undefined) {
+      merchant.superDistributorCommissionPercent =
+        input.superDistributorCommissionPercent;
+    }
+    if (input.masterDistributorCommissionPercent !== undefined) {
+      merchant.masterDistributorCommissionPercent =
+        input.masterDistributorCommissionPercent;
+    }
     if (input.services) {
       merchant.enabledServicesJson = JSON.stringify(input.services);
     }
@@ -274,6 +394,10 @@ export class MerchantsService implements OnModuleInit {
       newValue: { status: merchant.status, tier: merchant.tier },
     });
     return this.toView(merchant);
+  }
+
+  private validateFeeSlabs(feeSlabsJson: string): void {
+    validateFeeSlabsJson(feeSlabsJson);
   }
 
   async network() {
@@ -374,18 +498,54 @@ export class MerchantsService implements OnModuleInit {
         409,
       );
     }
+
+    // Ensure merchant has actually completed onboarding before approval
+    const missingOnboarding: string[] = [];
+    if (!merchant.kyc.panImagePath) {
+      missingOnboarding.push('PAN card image');
+    }
+    if (!merchant.kyc.aadhaarFrontPath) {
+      missingOnboarding.push('Aadhaar card image');
+    }
+    if (!merchant.kyc.selfiePath) {
+      missingOnboarding.push('Selfie photo');
+    }
+    if (!merchant.kyc.latitude || !merchant.kyc.longitude) {
+      missingOnboarding.push('GPS location');
+    }
+    if (!merchant.kyc.agreementSignedAt) {
+      missingOnboarding.push('Merchant agreement');
+    }
+    if (missingOnboarding.length > 0) {
+      throw new NexaraError(
+        ErrorCodes.KYC_INCOMPLETE,
+        `Merchant has not completed onboarding. Missing: ${missingOnboarding.join(', ')}`,
+        409,
+      );
+    }
+
+    // Verify KYC documents were verified
     if (
       merchant.kyc.aadhaarStatus !== 'VERIFIED' ||
-      merchant.kyc.panStatus !== 'VERIFIED' ||
+      merchant.kyc.panStatus !== 'VERIFIED'
+    ) {
+      throw new NexaraError(
+        ErrorCodes.KYC_INCOMPLETE,
+        'Aadhaar and PAN verification must be completed before activation',
+        409,
+      );
+    }
+    if (
       merchant.kyc.aadhaarImageMatch !== 'MATCHED' ||
       merchant.kyc.panImageMatch !== 'MATCHED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
-        'Aadhaar and PAN must be verified and document images must match API details',
+        'Document images must match API verification details',
         409,
       );
     }
+
     const organizationId = this.requireOrganizationId(merchant);
     await this.organizations.assertAncestorsActive(organizationId);
     await this.organizations.assertFeature(organizationId, Features.WALLET);
@@ -438,9 +598,7 @@ export class MerchantsService implements OnModuleInit {
     };
     const result: Record<string, string | null> = {};
     for (const [label, stored] of Object.entries(paths)) {
-      result[label] = stored
-        ? await this.presignStoredObject(stored)
-        : null;
+      result[label] = stored ? await this.presignStoredObject(stored) : null;
     }
     return result;
   }
@@ -564,10 +722,7 @@ export class MerchantsService implements OnModuleInit {
     const existingUser = await this.users.findByMobile(mobile);
 
     if (existingUser) {
-      if (
-        existingUser.role !== UserRole.MERCHANT ||
-        !existingUser.merchantId
-      ) {
+      if (existingUser.role !== UserRole.MERCHANT || !existingUser.merchantId) {
         throw new NexaraError(
           ErrorCodes.INVALID_REQUEST,
           'This mobile number is already linked to another account',
@@ -751,7 +906,11 @@ export class MerchantsService implements OnModuleInit {
   async storeKycFiles(
     id: string,
     files: {
-      aadhaarFront?: { originalname: string; buffer: Buffer; mimetype?: string };
+      aadhaarFront?: {
+        originalname: string;
+        buffer: Buffer;
+        mimetype?: string;
+      };
       aadhaarBack?: { originalname: string; buffer: Buffer; mimetype?: string };
       pan?: { originalname: string; buffer: Buffer; mimetype?: string };
       selfie?: { originalname: string; buffer: Buffer; mimetype?: string };
@@ -761,8 +920,7 @@ export class MerchantsService implements OnModuleInit {
     this.assertKycAllowed(merchant);
     const save = async (
       file:
-        | { originalname: string; buffer: Buffer; mimetype?: string }
-        | undefined,
+        { originalname: string; buffer: Buffer; mimetype?: string } | undefined,
       name: string,
     ) => {
       if (!file) {
@@ -833,8 +991,13 @@ export class MerchantsService implements OnModuleInit {
   private async refreshDocumentMatch(merchant: Merchant): Promise<void> {
     const mismatchName = (path: string | null) =>
       (path ?? '').toLowerCase().includes('mismatch');
-    if (merchant.kyc.aadhaarStatus === 'VERIFIED' && merchant.kyc.aadhaarFrontPath) {
-      merchant.kyc.aadhaarImageMatch = mismatchName(merchant.kyc.aadhaarFrontPath)
+    if (
+      merchant.kyc.aadhaarStatus === 'VERIFIED' &&
+      merchant.kyc.aadhaarFrontPath
+    ) {
+      merchant.kyc.aadhaarImageMatch = mismatchName(
+        merchant.kyc.aadhaarFrontPath,
+      )
         ? 'MISMATCH'
         : 'MATCHED';
     }
@@ -883,8 +1046,7 @@ export class MerchantsService implements OnModuleInit {
     contentTypeHint?: string,
   ): { buffer: Buffer; contentType: string; extension: string } {
     const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(value.trim());
-    const contentType =
-      dataUrl?.[1] ?? contentTypeHint ?? 'image/jpeg';
+    const contentType = dataUrl?.[1] ?? contentTypeHint ?? 'image/jpeg';
     const base64 = dataUrl?.[2] ?? value.replace(/^base64,/i, '').trim();
     const buffer = Buffer.from(base64, 'base64');
     if (!buffer.length) {
@@ -893,12 +1055,11 @@ export class MerchantsService implements OnModuleInit {
         'selfieBase64 is empty or invalid',
       );
     }
-    const extension =
-      contentType.includes('png')
-        ? '.png'
-        : contentType.includes('webp')
-          ? '.webp'
-          : '.jpg';
+    const extension = contentType.includes('png')
+      ? '.png'
+      : contentType.includes('webp')
+        ? '.webp'
+        : '.jpg';
     return { buffer, contentType, extension };
   }
 
@@ -939,8 +1100,7 @@ export class MerchantsService implements OnModuleInit {
     return searched.filter((row) => {
       const aliases = this.statusAliases(row.status);
       return (
-        row.status === normalizedStatus ||
-        aliases.includes(filters!.status!)
+        row.status === normalizedStatus || aliases.includes(filters!.status!)
       );
     });
   }
@@ -970,6 +1130,7 @@ export class MerchantsService implements OnModuleInit {
       mobile: merchant.mobile,
       email: merchant.email,
       status: merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       createdAt: merchant.createdAt,
       kyc: {
         panStatus: kyc?.panStatus ?? 'PENDING',
@@ -1022,7 +1183,7 @@ export class MerchantsService implements OnModuleInit {
     const entityType =
       entitlements?.type === 'MERCHANT'
         ? 'RETAILER'
-        : entitlements?.type ?? 'RETAILER';
+        : (entitlements?.type ?? 'RETAILER');
     const dailySpent = await this.currentDailySpent(merchant.id);
     const enabledServices = this.parseEnabledServices(
       merchant.enabledServicesJson,
@@ -1052,6 +1213,13 @@ export class MerchantsService implements OnModuleInit {
       feeType: merchant.feeType,
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
+      feeSlabsJson: merchant.feeSlabsJson,
+      channel: merchant.channel,
+      distributorCommissionPercent: merchant.distributorCommissionPercent,
+      superDistributorCommissionPercent:
+        merchant.superDistributorCommissionPercent,
+      masterDistributorCommissionPercent:
+        merchant.masterDistributorCommissionPercent,
       feeConfig: {
         feeModel: merchant.feeType,
         fixedFee: parseFloat(fixedFee),

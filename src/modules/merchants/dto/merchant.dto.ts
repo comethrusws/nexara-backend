@@ -12,10 +12,19 @@ import {
   Matches,
   ValidateNested,
 } from 'class-validator';
-import { MPIN_PATTERN, MPIN_VALIDATION_MESSAGE } from '../../../common/dto/mpin';
-import { FeeType, MerchantChannel, MerchantStatus, MerchantTier } from '../merchant.enums';
+import {
+  MPIN_PATTERN,
+  MPIN_VALIDATION_MESSAGE,
+} from '../../../common/dto/mpin';
+import {
+  FeeType,
+  MerchantChannel,
+  MerchantStatus,
+  MerchantTier,
+} from '../merchant.enums';
 
 const AMOUNT = /^\d+(\.\d{1,2})?$/;
+const PERCENT = /^\d+(\.\d{1,4})?$/;
 const MOBILE = /^\d{10}$/;
 
 export class MerchantServicesDto {
@@ -185,7 +194,9 @@ export class PublicOnboardingDto {
   @IsNotEmpty()
   address: string;
 
-  @ApiPropertyOptional({ description: 'Login password; auto-generated if omitted' })
+  @ApiPropertyOptional({
+    description: 'Login password; auto-generated if omitted',
+  })
   @IsOptional()
   @IsString()
   password?: string;
@@ -308,6 +319,38 @@ export class UpdateMerchantDto {
   @IsString()
   @Matches(AMOUNT)
   percentFee?: string;
+
+  @IsOptional()
+  @IsString()
+  feeSlabsJson?: string;
+
+  @IsOptional()
+  @IsEnum(MerchantChannel)
+  channel?: MerchantChannel;
+
+  @IsOptional()
+  @IsString()
+  @Matches(PERCENT, {
+    message:
+      'distributorCommissionPercent must be a percentage like 0.2 or 0.025',
+  })
+  distributorCommissionPercent?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(PERCENT, {
+    message:
+      'superDistributorCommissionPercent must be a percentage like 0.025',
+  })
+  superDistributorCommissionPercent?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(PERCENT, {
+    message:
+      'masterDistributorCommissionPercent must be a percentage like 0.01',
+  })
+  masterDistributorCommissionPercent?: string;
 
   @IsOptional()
   @ValidateNested()
