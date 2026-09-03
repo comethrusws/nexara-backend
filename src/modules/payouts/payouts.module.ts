@@ -4,6 +4,7 @@ import { BankModule } from '../../integrations/banks/bank.module';
 import { FineractModule } from '../../integrations/fineract/fineract.module';
 import { AuditModule } from '../audit/audit.module';
 import { BeneficiariesModule } from '../beneficiaries/beneficiaries.module';
+import { FeeEngineModule } from '../fee-engine/fee-engine.module';
 import { MerchantsModule } from '../merchants/merchants.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
@@ -18,6 +19,7 @@ import { PayoutsService } from './payouts.service';
   imports: [
     TypeOrmModule.forFeature([Payout, PayoutStatusEvent]),
     AuditModule,
+    FeeEngineModule,
     BeneficiariesModule,
     MerchantsModule,
     OrganizationsModule,

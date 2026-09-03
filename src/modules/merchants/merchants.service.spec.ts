@@ -8,6 +8,7 @@ import { UsersService } from '../auth/users.service';
 import { AuthService } from '../auth/auth.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
 import { Payout } from '../payouts/entities/payout.entity';
@@ -107,6 +108,10 @@ describe('MerchantsService', () => {
           useValue: { notifyUser: jest.fn() },
         },
         { provide: AuditService, useValue: { record: jest.fn() } },
+        {
+          provide: FeeEngineService,
+          useValue: { getConfig: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile();
     service = module.get(MerchantsService);

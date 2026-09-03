@@ -17,6 +17,8 @@ import {
   type FineractPort,
 } from '../../integrations/fineract/fineract.types';
 import { MerchantsService } from '../merchants/merchants.service';
+import { FeeType, MerchantChannel } from '../merchants/merchant.enums';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { OrganizationType } from '../organizations/organization.constants';
@@ -43,6 +45,7 @@ export class PayoutsService {
     private readonly notifications: NotificationsService,
     private readonly webhooks: WebhooksService,
     private readonly audit: AuditService,
+    private readonly feeEngine: FeeEngineService,
     @Inject(FINERACT_PORT) private readonly fineract: FineractPort,
     private readonly banks: BankRegistry,
   ) {}
@@ -94,7 +97,9 @@ export class PayoutsService {
       feeValue: merchant.feeValue,
       gstPercent: merchant.gstPercent,
       feeTiersJson: merchant.feeTiersJson,
-      feeSlabsJson: merchant.feeSlabsJson,
+      feeSlabsJson:
+        merchant.feeSlabsJson ??
+        (await this.platformSlabsFor(merchant.feeType, merchant.channel)),
       channel: merchant.channel,
     });
 
@@ -316,6 +321,25 @@ export class PayoutsService {
       await this.recordStatus(payout.id, PayoutStatus.UNKNOWN);
     }
     await this.payouts.save(payout);
+  }
+
+  private async platformSlabsFor(
+    feeType: FeeType,
+    channel: MerchantChannel,
+  ): Promise<string | undefined> {
+    const isSlab = feeType === FeeType.SLAB;
+    const isApi =
+      feeType === FeeType.API_SLAB || channel === MerchantChannel.API;
+    if (!isSlab && !isApi) {
+      return undefined;
+    }
+    try {
+      const config = await this.feeEngine.getConfig();
+      // Mirror calculatePayoutCharges precedence: explicit SLAB wins over API.
+      return isSlab ? config.standardSlabsJson : config.apiSlabsJson;
+    } catch {
+      return undefined;
+    }
   }
 
   private async distributeUplineCommissions(payout: Payout): Promise<void> {

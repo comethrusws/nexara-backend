@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, In, Not, Repository } from 'typeorm';
 import { Payout, PayoutStatus } from '../payouts/entities/payout.entity';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
+import { validateFeeSlabsJson } from '../../common/validation/fee-slabs.validator';
 import { KYC_PORT, type KycPort } from '../../integrations/kyc/kyc.types';
 import {
   OBJECT_STORAGE,
@@ -12,7 +13,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { UserRole } from '../auth/auth.constants';
-import { UsersService } from '../auth/users.service';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Features, OrganizationType } from '../organizations/organization.constants';
 import { OrganizationsService } from '../organizations/organizations.service';
@@ -44,6 +45,7 @@ export class MerchantsService implements OnModuleInit {
     private readonly auth: AuthService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
+    private readonly feeEngine: FeeEngineService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -84,6 +86,19 @@ export class MerchantsService implements OnModuleInit {
       email: email ?? undefined,
       organizationType: this.mapEntityType(input.entityType),
     });
+    // New merchants inherit the platform rate card; admins can override
+    // per-merchant afterwards on the merchant detail page.
+    let platformRates: {
+      distributorCommissionPercent?: string;
+      superDistributorCommissionPercent?: string;
+      masterDistributorCommissionPercent?: string;
+      gstPercent?: string;
+    } | null = null;
+    try {
+      platformRates = await this.feeEngine.getConfig();
+    } catch {
+      platformRates = null;
+    }
     const merchant = this.merchants.create({
       businessName,
       contactPerson,
@@ -96,7 +111,19 @@ export class MerchantsService implements OnModuleInit {
       tier: input.tier ?? MerchantTier.SILVER,
       feeType: input.feeType ?? FeeType.FIXED,
       feeValue: input.feeValue ?? '10.00',
-      gstPercent: input.gstPercent ?? '18.00',
+      gstPercent: input.gstPercent ?? platformRates?.gstPercent ?? '18.00',
+      distributorCommissionPercent:
+        input.distributorCommissionPercent ??
+        platformRates?.distributorCommissionPercent ??
+        '0.20',
+      superDistributorCommissionPercent:
+        input.superDistributorCommissionPercent ??
+        platformRates?.superDistributorCommissionPercent ??
+        '0.025',
+      masterDistributorCommissionPercent:
+        input.masterDistributorCommissionPercent ??
+        platformRates?.masterDistributorCommissionPercent ??
+        '0.010',
       enabledServicesJson: JSON.stringify(
         input.services ?? {
           payouts: true,
@@ -382,51 +409,7 @@ export class MerchantsService implements OnModuleInit {
   }
 
   private validateFeeSlabs(feeSlabsJson: string): void {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(feeSlabsJson);
-    } catch {
-      throw new NexaraError(
-        ErrorCodes.INVALID_REQUEST,
-        'feeSlabsJson must be valid JSON',
-      );
-    }
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      throw new NexaraError(
-        ErrorCodes.INVALID_REQUEST,
-        'feeSlabsJson must be a non-empty array of slab rules',
-      );
-    }
-    for (const rule of parsed as Array<Record<string, unknown>>) {
-      if (
-        typeof rule.minAmount !== 'number' ||
-        rule.minAmount < 0 ||
-        typeof rule.maxAmount !== 'number' ||
-        rule.maxAmount < 0 ||
-        (rule.maxAmount !== 0 && rule.maxAmount <= rule.minAmount)
-      ) {
-        throw new NexaraError(
-          ErrorCodes.INVALID_REQUEST,
-          'Each fee slab needs minAmount >= 0 and maxAmount > minAmount (0 means no upper limit)',
-        );
-      }
-      if (rule.flatFee == null && rule.percentFee == null) {
-        throw new NexaraError(
-          ErrorCodes.INVALID_REQUEST,
-          'Each fee slab needs a flatFee, a percentFee, or both',
-        );
-      }
-      if (
-        rule.type != null &&
-        rule.type !== 'FIXED' &&
-        rule.type !== 'PERCENTAGE'
-      ) {
-        throw new NexaraError(
-          ErrorCodes.INVALID_REQUEST,
-          'Fee slab type must be FIXED or PERCENTAGE',
-        );
-      }
-    }
+    validateFeeSlabsJson(feeSlabsJson);
   }
 
   async network() {

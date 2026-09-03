@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BankRegistry } from '../../integrations/banks/bank.registry';
 import { FINERACT_PORT } from '../../integrations/fineract/fineract.types';
 import { AuditService } from '../audit/audit.service';
+import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { FeeType, MerchantStatus } from '../merchants/merchant.enums';
 import { MerchantsService } from '../merchants/merchants.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -71,6 +72,10 @@ describe('PayoutsService', () => {
         { provide: NotificationsService, useValue: { notifyUser: jest.fn() } },
         { provide: WebhooksService, useValue: { emit: jest.fn() } },
         { provide: AuditService, useValue: { record: jest.fn() } },
+        {
+          provide: FeeEngineService,
+          useValue: { getConfig: jest.fn().mockResolvedValue(null) },
+        },
         { provide: FINERACT_PORT, useValue: fineract },
         { provide: BankRegistry, useValue: banks },
       ],
