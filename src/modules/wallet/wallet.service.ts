@@ -14,6 +14,8 @@ import {
   WalletFunding,
 } from './entities/wallet-funding.entity';
 import { WalletMapping } from './entities/wallet-mapping.entity';
+import { Merchant } from '../merchants/entities/merchant.entity';
+import { MerchantStatus } from '../merchants/merchant.enums';
 
 export interface WalletView {
   merchantId: string;
@@ -30,6 +32,8 @@ export class WalletService {
     private readonly mappings: Repository<WalletMapping>,
     @InjectRepository(WalletFunding)
     private readonly fundings: Repository<WalletFunding>,
+    @InjectRepository(Merchant)
+    private readonly merchants: Repository<Merchant>,
     @Inject(FINERACT_PORT)
     private readonly fineract: FineractPort,
   ) {}
@@ -97,6 +101,7 @@ export class WalletService {
     merchantId: string,
     input: { amount: string; externalPaymentReference: string; notes?: string },
   ): Promise<WalletView> {
+    await this.requireActiveMerchant(merchantId);
     return this.fund({
       merchantId,
       amount: input.amount,
@@ -193,6 +198,22 @@ export class WalletService {
       );
     }
     return mapping;
+  }
+
+  /**
+   * Wallet credits apply to ACTIVE merchants only. Read straight from the
+   * merchant row (no service dependency) to avoid a Merchants ↔ Wallet
+   * module cycle.
+   */
+  private async requireActiveMerchant(merchantId: string): Promise<void> {
+    const merchant = await this.merchants.findOne({ where: { id: merchantId } });
+    if (!merchant || merchant.status !== MerchantStatus.ACTIVE) {
+      throw new NexaraError(
+        ErrorCodes.MERCHANT_INACTIVE,
+        'Wallet credits apply to ACTIVE merchants only',
+        409,
+      );
+    }
   }
 
   private async toView(
