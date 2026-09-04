@@ -247,6 +247,57 @@ describe('MerchantsService', () => {
     expect(wallets.openWallet).not.toHaveBeenCalled();
   });
 
+  it('provisions an independent retailer directly under the admin org', async () => {
+    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
+    organizations.createMerchantOrganization.mockResolvedValue({ id: 'org-new' });
+    merchants.create.mockImplementation((value: Merchant) => value);
+    merchants.save.mockImplementation(async (value: Merchant) => ({
+      ...value,
+      id: 'm-new',
+    }));
+    kycRecords.create.mockImplementation((value: MerchantKyc) => value);
+    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+
+    const result = await service.create({
+      mobile: '9876543210',
+      entityType: 'RETAILER',
+    } as never);
+
+    expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentId: 'org-admin',
+        organizationType: 'MERCHANT',
+      }),
+    );
+    expect(merchants.save).toHaveBeenCalled();
+    expect(result.organizationId).toBe('org-new');
+  });
+
+  it('provisions a distributor under a super-distributor org', async () => {
+    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
+    organizations.createMerchantOrganization.mockResolvedValue({ id: 'org-dist' });
+    merchants.create.mockImplementation((value: Merchant) => value);
+    merchants.save.mockImplementation(async (value: Merchant) => ({
+      ...value,
+      id: 'm-dist',
+    }));
+    kycRecords.create.mockImplementation((value: MerchantKyc) => value);
+    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+
+    await service.create({
+      mobile: '9876543211',
+      entityType: 'DISTRIBUTOR',
+      parentOrganizationId: 'org-sd-1',
+    } as never);
+
+    expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentId: 'org-sd-1',
+        organizationType: 'DISTRIBUTOR',
+      }),
+    );
+  });
+
   it('maps a missing KYC document to 404', async () => {
     storage.getObject.mockImplementationOnce(() => {
       throw new Error('NoSuchKey');
