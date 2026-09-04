@@ -483,7 +483,7 @@ export class OrganizationsService implements OnModuleInit {
     if (!org) {
       throw new NexaraError(
         ErrorCodes.ORGANIZATION_NOT_FOUND,
-        'Organization was not found',
+        `Organization ${id} was not found`,
         404,
       );
     }
