@@ -34,6 +34,7 @@ describe('MerchantsService', () => {
   const wallets = {
     openWallet: jest.fn(),
   };
+  const audit = { record: jest.fn() };
   const storage = {
     putObject: jest.fn(({ key }: { key: string }) => ({
       key,
@@ -138,7 +139,7 @@ describe('MerchantsService', () => {
           provide: NotificationsService,
           useValue: { notifyUser: jest.fn() },
         },
-        { provide: AuditService, useValue: { record: jest.fn() } },
+        { provide: AuditService, useValue: audit },
         {
           provide: FeeEngineService,
           useValue: { getConfig: jest.fn().mockResolvedValue(null) },
@@ -155,16 +156,27 @@ describe('MerchantsService', () => {
 
   it('activates a KYC-complete merchant and opens a wallet', async () => {
     merchants.findOne.mockResolvedValue({ ...merchant });
-    merchants.save.mockImplementation(async (value: Merchant) => value);
-    wallets.openWallet.mockResolvedValue({});
+    merchants.save.mockImplementation((value: Merchant) => value);
+    wallets.openWallet.mockResolvedValue({
+      merchantId: 'm1',
+      fineractClientId: 10000,
+      fineractSavingsAccountId: 1000,
+    });
 
-    const result = await service.activate('m1');
+    const result = await service.activate('m1', 'admin@nexara.test');
 
     expect(wallets.openWallet).toHaveBeenCalledWith({
       merchantId: 'm1',
       businessName: 'Acme',
       mobileNo: '9876543210',
     });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorEmail: 'admin@nexara.test',
+        action: 'MERCHANT_ACTIVATED',
+        merchantId: 'm1',
+      }),
+    );
     expect(result.status).toBe(MerchantStatus.ACTIVE);
   });
 
@@ -198,6 +210,41 @@ describe('MerchantsService', () => {
       service.streamKycFile('s3://test/other/m1/pan.jpg'),
     ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST });
     expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it('routes direct ACTIVE transitions through activation gates and wallet provisioning', async () => {
+    merchants.findOne.mockResolvedValue({
+      ...merchant,
+      status: MerchantStatus.KYC_PENDING,
+    });
+    merchants.save.mockImplementation((value: Merchant) => value);
+    wallets.openWallet.mockResolvedValue({});
+
+    const result = await service.update(
+      'm1',
+      { status: MerchantStatus.ACTIVE },
+      'admin@nexara.test',
+    );
+
+    expect(wallets.openWallet).toHaveBeenCalledWith({
+      merchantId: 'm1',
+      businessName: 'Acme',
+      mobileNo: '9876543210',
+    });
+    expect(result.status).toBe(MerchantStatus.ACTIVE);
+  });
+
+  it('blocks forcing ACTIVE when onboarding is incomplete', async () => {
+    merchants.findOne.mockResolvedValue({
+      ...merchant,
+      status: MerchantStatus.KYC_PENDING,
+      kyc: { aadhaarStatus: 'PENDING', panStatus: 'PENDING' },
+    });
+
+    await expect(
+      service.update('m1', { status: MerchantStatus.ACTIVE }),
+    ).rejects.toMatchObject({ code: ErrorCodes.KYC_INCOMPLETE });
+    expect(wallets.openWallet).not.toHaveBeenCalled();
   });
 
   it('maps a missing KYC document to 404', async () => {

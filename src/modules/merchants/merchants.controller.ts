@@ -171,8 +171,8 @@ export class MerchantsController {
   @Post(':id/kyc/approve')
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Approve KYC and activate merchant' })
-  approveKyc(@Param('id') id: string) {
-    return this.merchants.approveKyc(id);
+  approveKyc(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.merchants.approveKyc(id, user.email);
   }
 
   @Post(':id/kyc/reject')
@@ -187,8 +187,8 @@ export class MerchantsController {
   }
 
   @Post(':id/activate')
-  activate(@Param('id') id: string) {
-    return this.merchants.activate(id);
+  activate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.merchants.activate(id, user.email);
   }
 
   @Post(':id/suspend')

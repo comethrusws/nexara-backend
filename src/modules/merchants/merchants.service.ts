@@ -223,8 +223,8 @@ export class MerchantsService implements OnModuleInit {
     };
   }
 
-  async approveKyc(id: string) {
-    return this.activate(id);
+  async approveKyc(id: string, actorEmail = 'ops') {
+    return this.activate(id, actorEmail);
   }
 
   async rejectKyc(id: string, reason?: string, actorEmail = 'ops') {
@@ -335,7 +335,15 @@ export class MerchantsService implements OnModuleInit {
     const merchant = await this.requireMerchant(id);
     const previous = { status: merchant.status, tier: merchant.tier };
     if (input.status && input.status !== merchant.status) {
-      merchant.status = input.status;
+      if (input.status === MerchantStatus.ACTIVE) {
+        // Never allow status to be forced to ACTIVE around the approval
+        // path: same onboarding gates, wallet provisioning, and
+        // notification as approveKyc -> activate.
+        await this.activate(id, actorEmail);
+        merchant.status = MerchantStatus.ACTIVE;
+      } else {
+        merchant.status = input.status;
+      }
     }
     if (input.dailyPayoutLimit) {
       merchant.dailyPayoutLimit = input.dailyPayoutLimit;
@@ -483,7 +491,7 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async activate(id: string) {
+  async activate(id: string, actorEmail = 'ops') {
     const merchant = await this.requireMerchant(id);
     if (merchant.status === MerchantStatus.ACTIVE) {
       return this.toView(merchant);
@@ -549,13 +557,24 @@ export class MerchantsService implements OnModuleInit {
     const organizationId = this.requireOrganizationId(merchant);
     await this.organizations.assertAncestorsActive(organizationId);
     await this.organizations.assertFeature(organizationId, Features.WALLET);
-    await this.wallets.openWallet({
+    // Wallet BEFORE status flip: a merchant can never be ACTIVE without a
+    // provisioned Fineract wallet. openWallet is idempotent, so retries and
+    // double-submits reuse the existing Fineract account instead of
+    // creating duplicates.
+    const wallet = await this.wallets.openWallet({
       merchantId: merchant.id,
       businessName: merchant.businessName,
       mobileNo: merchant.mobile,
     });
     merchant.status = MerchantStatus.ACTIVE;
     await this.merchants.save(merchant);
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'ADMIN',
+      action: 'MERCHANT_ACTIVATED',
+      merchantId: merchant.id,
+      details: `Merchant activated with Fineract wallet (client ${wallet.fineractClientId}, savings ${wallet.fineractSavingsAccountId})`,
+    });
     await this.notifications.notifyUser({
       merchantId: merchant.id,
       organizationId: merchant.organizationId,
