@@ -39,9 +39,16 @@ describe('MerchantsService', () => {
     get: jest.fn(),
     assertAncestorsActive: jest.fn(),
     assertFeature: jest.fn(),
+    updateContactDetails: jest.fn(),
   };
 
   let service: MerchantsService;
+  const users = {
+    createMerchantUser: jest.fn(),
+    findByMobile: jest.fn(),
+    updateMerchantProfile: jest.fn(),
+  };
+  const audit = { record: jest.fn() };
   const merchant: Merchant = {
     id: 'm1',
     businessName: 'Acme',
@@ -62,6 +69,10 @@ describe('MerchantsService', () => {
       panStatus: 'VERIFIED',
       aadhaarImageMatch: 'MATCHED',
       panImageMatch: 'MATCHED',
+      shopType: 'kirana',
+      latitude: '18.5',
+      longitude: '73.8',
+      selfiePath: null,
     } as MerchantKyc,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -86,13 +97,13 @@ describe('MerchantsService', () => {
         },
         { provide: WalletService, useValue: wallets },
         { provide: OrganizationsService, useValue: organizations },
-        { provide: UsersService, useValue: { createMerchantUser: jest.fn(), findByMobile: jest.fn() } },
+        { provide: UsersService, useValue: users },
         { provide: AuthService, useValue: { assertRecentOnboardingOtp: jest.fn() } },
         {
           provide: NotificationsService,
           useValue: { notifyUser: jest.fn() },
         },
-        { provide: AuditService, useValue: { record: jest.fn() } },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile();
     service = module.get(MerchantsService);
@@ -104,7 +115,7 @@ describe('MerchantsService', () => {
   });
 
   it('activates a KYC-complete merchant and opens a wallet', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant });
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: { ...merchant.kyc } });
     merchants.save.mockImplementation(async (value: Merchant) => value);
     wallets.openWallet.mockResolvedValue({});
 
@@ -128,5 +139,64 @@ describe('MerchantsService', () => {
       code: ErrorCodes.KYC_INCOMPLETE,
     });
     expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
+  it('updates pending onboarding profile fields and audits the change', async () => {
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: { ...merchant.kyc } });
+    merchants.save.mockImplementation(async (value: Merchant) => value);
+    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+    users.updateMerchantProfile.mockResolvedValue({});
+
+    const result = await service.updatePendingOnboarding(
+      'm1',
+      'user-1',
+      {
+        businessName: 'Updated Store',
+        contactPerson: 'Anita',
+        email: 'anita@acme.test',
+        address: 'Pune',
+      },
+      'anita@acme.test',
+    );
+
+    expect(result.businessName).toBe('Updated Store');
+    expect(result.contactPerson).toBe('Anita');
+    expect(result.email).toBe('anita@acme.test');
+    expect(result.status).toBe(MerchantStatus.KYC_PENDING);
+    expect(organizations.updateContactDetails).toHaveBeenCalledWith('org-1', {
+      email: 'anita@acme.test',
+      contactPerson: 'Anita',
+      name: 'Updated Store',
+    });
+    expect(users.updateMerchantProfile).toHaveBeenCalledWith('user-1', {
+      email: 'anita@acme.test',
+      name: 'Anita',
+    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'MERCHANT_ONBOARDING_UPDATED',
+        merchantId: 'm1',
+        actorRole: 'MERCHANT',
+      }),
+    );
+  });
+
+  it('rejects pending onboarding updates when merchant is already active', async () => {
+    merchants.findOne.mockResolvedValue({
+      ...merchant,
+      status: MerchantStatus.ACTIVE,
+      kyc: { ...merchant.kyc },
+    });
+
+    await expect(
+      service.updatePendingOnboarding(
+        'm1',
+        'user-1',
+        { businessName: 'Nope' },
+        'ops@acme.test',
+      ),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_REQUEST,
+    });
   });
 });

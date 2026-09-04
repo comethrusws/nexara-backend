@@ -21,6 +21,7 @@ import {
   CreateMerchantDto,
   PublicOnboardingDto,
   UpdateMerchantDto,
+  UpdatePendingOnboardingDto,
 } from './dto/merchant.dto';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
@@ -827,6 +828,141 @@ export class MerchantsService implements OnModuleInit {
       merchant.kyc.agreementSignedAt = new Date();
     }
     await this.kycRecords.save(merchant.kyc);
+    return this.toView(merchant);
+  }
+
+  /**
+   * Merchant self-serve correction of a pending KYC submission.
+   * Mobile / PAN / Aadhaar stay locked; profile + location + selfie may change.
+   */
+  async updatePendingOnboarding(
+    merchantId: string,
+    userId: string,
+    input: UpdatePendingOnboardingDto,
+    actorEmail: string,
+  ) {
+    const hasUpdate =
+      input.businessName !== undefined ||
+      input.contactPerson !== undefined ||
+      input.email !== undefined ||
+      input.address !== undefined ||
+      input.latitude !== undefined ||
+      input.longitude !== undefined ||
+      input.shopType !== undefined ||
+      input.selfieBase64 !== undefined;
+    if (!hasUpdate) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Provide at least one field to update',
+        400,
+      );
+    }
+
+    const merchant = await this.requireMerchant(merchantId);
+    if (
+      merchant.status !== MerchantStatus.CREATED &&
+      merchant.status !== MerchantStatus.KYC_PENDING
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Onboarding can only be edited while KYC is pending review',
+        409,
+      );
+    }
+
+    const previous = {
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      email: merchant.email,
+      address: merchant.address,
+      shopType: merchant.kyc?.shopType ?? null,
+      latitude: merchant.kyc?.latitude ?? null,
+      longitude: merchant.kyc?.longitude ?? null,
+      hasSelfie: Boolean(merchant.kyc?.selfiePath),
+    };
+
+    if (input.businessName !== undefined) {
+      merchant.businessName = input.businessName.trim();
+    }
+    if (input.contactPerson !== undefined) {
+      merchant.contactPerson = input.contactPerson.trim();
+    }
+    if (input.email !== undefined) {
+      merchant.email = input.email.toLowerCase().trim();
+    }
+    if (input.address !== undefined) {
+      merchant.address = input.address.trim();
+    }
+    await this.merchants.save(merchant);
+
+    if (merchant.organizationId) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        email: merchant.email ?? undefined,
+        contactPerson: merchant.contactPerson,
+        name: merchant.businessName,
+      });
+    }
+
+    await this.users.updateMerchantProfile(userId, {
+      email: input.email !== undefined ? merchant.email ?? undefined : undefined,
+      name:
+        input.contactPerson !== undefined
+          ? merchant.contactPerson
+          : undefined,
+    });
+
+    if (input.latitude !== undefined) {
+      merchant.kyc.latitude = input.latitude;
+    }
+    if (input.longitude !== undefined) {
+      merchant.kyc.longitude = input.longitude;
+    }
+    if (input.shopType !== undefined) {
+      merchant.kyc.shopType = input.shopType;
+    }
+
+    if (this.looksLikeImagePayload(input.selfieBase64)) {
+      const decoded = this.decodeBase64Image(
+        input.selfieBase64!,
+        input.selfieContentType,
+      );
+      const stored = await this.storage.putObject({
+        key: `kyc/${merchant.id}/selfie${decoded.extension}`,
+        body: decoded.buffer,
+        contentType: decoded.contentType,
+      });
+      merchant.kyc.selfiePath = stored.url;
+    } else if (input.selfieBase64 !== undefined) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'selfieBase64 must be a valid image data-URL or base64 payload',
+        400,
+      );
+    }
+
+    await this.kycRecords.save(merchant.kyc);
+    merchant.status = MerchantStatus.KYC_PENDING;
+    await this.merchants.save(merchant);
+
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'MERCHANT',
+      action: 'MERCHANT_ONBOARDING_UPDATED',
+      merchantId: merchant.id,
+      details: 'Merchant updated pending KYC submission',
+      previousValue: previous,
+      newValue: {
+        businessName: merchant.businessName,
+        contactPerson: merchant.contactPerson,
+        email: merchant.email,
+        address: merchant.address,
+        shopType: merchant.kyc.shopType,
+        latitude: merchant.kyc.latitude,
+        longitude: merchant.kyc.longitude,
+        hasSelfie: Boolean(merchant.kyc.selfiePath),
+      },
+    });
+
     return this.toView(merchant);
   }
 

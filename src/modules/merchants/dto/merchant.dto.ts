@@ -333,3 +333,50 @@ export class OnboardingExtrasDto {
   @IsBoolean()
   agreementAccepted?: boolean;
 }
+
+/** Authenticated merchant corrections while KYC is still pending. */
+export class UpdatePendingOnboardingDto {
+  @ApiPropertyOptional({ example: 'Sharma General Store' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  businessName?: string;
+
+  @ApiPropertyOptional({ example: 'Rahul Sharma' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  contactPerson?: string;
+
+  @ApiPropertyOptional({ example: 'rahul@example.com' })
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiPropertyOptional({ example: '12 MG Road, Pune' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  latitude?: string;
+
+  @IsOptional()
+  @IsString()
+  longitude?: string;
+
+  @IsOptional()
+  @IsString()
+  shopType?: string;
+
+  /** Optional data-URL or raw base64 selfie replacement */
+  @IsOptional()
+  @IsString()
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  selfieContentType?: string;
+}
