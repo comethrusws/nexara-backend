@@ -1,11 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { mkdir, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import { dirname, extname, join } from 'path';
 import {
+  GetObjectOutput,
   ObjectStoragePort,
   PutObjectInput,
   StoredObject,
 } from './storage.types';
+
+const CONTENT_TYPES_BY_EXTENSION: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+};
 
 @Injectable()
 export class LocalStorageAdapter implements ObjectStoragePort {
@@ -17,5 +26,13 @@ export class LocalStorageAdapter implements ObjectStoragePort {
       key: input.key,
       url: `file://${absolute.replace(/\\/g, '/')}`,
     };
+  }
+
+  async getObject(key: string): Promise<GetObjectOutput> {
+    const body = await readFile(join(process.cwd(), 'uploads', key));
+    const contentType =
+      CONTENT_TYPES_BY_EXTENSION[extname(key).toLowerCase()] ??
+      'application/octet-stream';
+    return { body, contentType };
   }
 }

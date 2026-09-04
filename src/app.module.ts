@@ -6,6 +6,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { BbpsModule } from './modules/bbps/bbps.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { FeeEngineModule } from './modules/fee-engine/fee-engine.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { FineractModule } from './integrations/fineract/fineract.module';
 import { HealthModule } from './modules/health/health.module';
@@ -49,6 +50,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     WalletModule,
     MerchantsModule,
     PayoutsModule,
+    FeeEngineModule,
     DashboardModule,
     ReconciliationModule,
     BbpsModule,

@@ -10,9 +10,15 @@ export type PutObjectInput = {
   contentType?: string;
 };
 
+export type GetObjectOutput = {
+  body: Buffer;
+  contentType: string;
+};
+
 export interface ObjectStoragePort {
   putObject(input: PutObjectInput): Promise<StoredObject>;
   getPresignedUrl?(key: string, expiresInSeconds?: number): Promise<string>;
+  getObject?(key: string): Promise<GetObjectOutput>;
 }
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');

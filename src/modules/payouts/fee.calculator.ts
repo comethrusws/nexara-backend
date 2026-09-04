@@ -53,7 +53,8 @@ export function calculatePayoutCharges(input: {
     const apiSlabResult = resolveApiSlabFeeCents(
       amountRupees,
       payoutCents,
-      input.preferPercentageForSlab ?? false
+      input.preferPercentageForSlab ?? false,
+      input.feeSlabsJson,
     );
     feeCents = apiSlabResult.feeCents;
     appliedSlab = apiSlabResult.slabDescription;
@@ -78,14 +79,14 @@ export function calculatePayoutCharges(input: {
   };
 }
 
-export function resolveSlabFeeCents(
+function matchCustomSlab(
   feeSlabsJson: string | null | undefined,
   amountRupees: number,
   payoutCents: number,
-  preferPercentage: boolean
-): { feeCents: number; slabDescription: string } {
+  preferPercentage: boolean,
+  labelPrefix: string,
+): { feeCents: number; slabDescription: string } | null {
   let customSlabs: FeeSlabRule[] = [];
-
   if (feeSlabsJson) {
     try {
       const parsed = JSON.parse(feeSlabsJson);
@@ -96,26 +97,52 @@ export function resolveSlabFeeCents(
       // fallback to default slabs below
     }
   }
+  if (customSlabs.length === 0) {
+    return null;
+  }
+  const matched = customSlabs.find(
+    (s) =>
+      amountRupees >= s.minAmount &&
+      (s.maxAmount === 0 || amountRupees <= s.maxAmount),
+  );
+  if (!matched) {
+    return null;
+  }
+  const range = `${matched.minAmount}-${matched.maxAmount || '∞'}`;
+  if (
+    (preferPercentage || matched.type === 'PERCENTAGE') &&
+    matched.percentFee != null
+  ) {
+    const pctCents = toCents(String(matched.percentFee));
+    return {
+      feeCents: Math.round((payoutCents * pctCents) / 10000),
+      slabDescription: `${labelPrefix}${range}: ${matched.percentFee}%`,
+    };
+  }
+  if (matched.flatFee != null) {
+    return {
+      feeCents: toCents(String(matched.flatFee)),
+      slabDescription: `${labelPrefix}${range}: ₹${matched.flatFee}`,
+    };
+  }
+  return null;
+}
 
-  if (customSlabs.length > 0) {
-    const matched = customSlabs.find(
-      (s) => amountRupees >= s.minAmount && (s.maxAmount === 0 || amountRupees <= s.maxAmount)
-    );
-    if (matched) {
-      if ((preferPercentage || matched.type === 'PERCENTAGE') && matched.percentFee != null) {
-        const pctCents = toCents(String(matched.percentFee));
-        const feeCents = Math.round((payoutCents * pctCents) / 10000);
-        return {
-          feeCents,
-          slabDescription: `Slab ₹${matched.minAmount}-${matched.maxAmount || '∞'}: ${matched.percentFee}%`,
-        };
-      } else if (matched.flatFee != null) {
-        return {
-          feeCents: toCents(String(matched.flatFee)),
-          slabDescription: `Slab ₹${matched.minAmount}-${matched.maxAmount || '∞'}: ₹${matched.flatFee}`,
-        };
-      }
-    }
+export function resolveSlabFeeCents(
+  feeSlabsJson: string | null | undefined,
+  amountRupees: number,
+  payoutCents: number,
+  preferPercentage: boolean
+): { feeCents: number; slabDescription: string } {
+  const custom = matchCustomSlab(
+    feeSlabsJson,
+    amountRupees,
+    payoutCents,
+    preferPercentage,
+    'Slab ₹'
+  );
+  if (custom) {
+    return custom;
   }
 
   // Default Standard Merchant Slabs:
@@ -167,8 +194,22 @@ export function resolveSlabFeeCents(
 export function resolveApiSlabFeeCents(
   amountRupees: number,
   payoutCents: number,
-  preferPercentage: boolean
+  preferPercentage: boolean,
+  feeSlabsJson?: string | null,
 ): { feeCents: number; slabDescription: string } {
+  const custom = matchCustomSlab(
+    feeSlabsJson,
+    amountRupees,
+    payoutCents,
+    preferPercentage,
+    'API Slab ₹'
+  );
+  if (custom) {
+    return {
+      feeCents: custom.feeCents,
+      slabDescription: `${custom.slabDescription} + 18% GST`,
+    };
+  }
   // API Pricing Slabs:
   // Slab 1 (₹100 - ₹25,000): Amt + GST = ₹12 + 18% GST  OR  1.0% + 18% GST
   // Slab 2 (> ₹25,000): Amt + GST = ₹20 + 18% GST  OR  1.5% + 18% GST

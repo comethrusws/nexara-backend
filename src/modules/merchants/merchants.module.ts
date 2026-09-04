@@ -4,6 +4,7 @@ import { KycModule } from '../../integrations/kyc/kyc.module';
 import { StorageModule } from '../../integrations/storage/storage.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { FeeEngineModule } from '../fee-engine/fee-engine.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { Payout } from '../payouts/entities/payout.entity';
@@ -23,6 +24,7 @@ import { MerchantsService } from './merchants.service';
     AuthModule,
     NotificationsModule,
     AuditModule,
+    FeeEngineModule,
   ],
   controllers: [MerchantsController],
   providers: [MerchantsService],

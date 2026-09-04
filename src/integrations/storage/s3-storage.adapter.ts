@@ -7,6 +7,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  GetObjectOutput,
   ObjectStoragePort,
   PutObjectInput,
   StoredObject,
@@ -22,8 +23,7 @@ export class S3StorageAdapter implements ObjectStoragePort {
     const region = config.get<string>('storage.s3.region') ?? 'ap-south-1';
     const endpoint = config.get<string>('storage.s3.endpoint') || undefined;
     this.bucket = config.get<string>('storage.s3.bucket') ?? '';
-    this.publicBaseUrl =
-      config.get<string>('storage.s3.publicBaseUrl') || null;
+    this.publicBaseUrl = config.get<string>('storage.s3.publicBaseUrl') || null;
     this.client = new S3Client({
       region,
       endpoint,
@@ -60,5 +60,19 @@ export class S3StorageAdapter implements ObjectStoragePort {
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       { expiresIn: expiresInSeconds },
     );
+  }
+
+  async getObject(key: string): Promise<GetObjectOutput> {
+    const result = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    const body = await result.Body?.transformToByteArray();
+    if (!body) {
+      throw new Error(`S3 object not found: ${key}`);
+    }
+    return {
+      body: Buffer.from(body),
+      contentType: result.ContentType ?? 'application/octet-stream',
+    };
   }
 }
