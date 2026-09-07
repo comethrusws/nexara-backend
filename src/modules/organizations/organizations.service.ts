@@ -367,6 +367,30 @@ export class OrganizationsService implements OnModuleInit {
     return this.chain(organizationId);
   }
 
+  /**
+   * All organization ids below the given root (BFS, cycle-safe).
+   * Used to scope downline reads and provisioning to a user's own network.
+   */
+  async descendantIds(rootId: string): Promise<string[]> {
+    await this.requireOrg(rootId);
+    const result: string[] = [];
+    const seen = new Set<string>([rootId]);
+    const queue: string[] = [rootId];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      const kids = await this.list({ parentId: current });
+      for (const kid of kids) {
+        if (seen.has(kid.id)) {
+          continue;
+        }
+        seen.add(kid.id);
+        result.push(kid.id);
+        queue.push(kid.id);
+      }
+    }
+    return result;
+  }
+
   async assertAncestorsActive(organizationId: string): Promise<void> {
     const chain = await this.chain(organizationId);
     const blocked = chain.find(

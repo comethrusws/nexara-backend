@@ -72,6 +72,16 @@ export class MerchantsService implements OnModuleInit {
 
   async create(input: CreateMerchantDto) {
     const admin = await this.organizations.ensureSeeded();
+    const duplicate = await this.merchants.findOne({
+      where: { mobile: input.mobile },
+    });
+    if (duplicate) {
+      throw new NexaraError(
+        ErrorCodes.DUPLICATE_REFERENCE,
+        `Mobile ${input.mobile} is already provisioned (status ${duplicate.status})`,
+        409,
+      );
+    }
     const parentId =
       input.parentOrganizationId && input.parentOrganizationId.trim()
         ? input.parentOrganizationId
@@ -259,6 +269,141 @@ export class MerchantsService implements OnModuleInit {
       type: 'MERCHANT_KYC_REJECTED',
     });
     return this.toView(merchant);
+  }
+
+  /**
+   * Downline network for a distributor-tier user: every merchant below
+   * their own organization, with activation status and wallet presence.
+   * Read-only — no KYC or activation powers leak through this view.
+   */
+  async getDownline(actorMerchantId: string) {
+    const actor = await this.requireMerchant(actorMerchantId);
+    const actorOrgId = this.requireOrganizationId(actor);
+    const descendantOrgIds = await this.organizations.descendantIds(actorOrgId);
+    if (descendantOrgIds.length === 0) {
+      return [];
+    }
+    const rows = await this.merchants.find({
+      where: { organizationId: In(descendantOrgIds) },
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+    const orgViews = await this.organizations.list();
+    const typeByOrgId = new Map(orgViews.map((org) => [org.id, org.type]));
+    return Promise.all(
+      rows.map(async (row) => {
+        let hasWallet = false;
+        try {
+          await this.wallets.getRequiredMapping(row.id);
+          hasWallet = true;
+        } catch {
+          hasWallet = false;
+        }
+        const orgType = typeByOrgId.get(row.organizationId ?? '');
+        return {
+          id: row.id,
+          businessName: row.businessName,
+          contactPerson: row.contactPerson,
+          mobile: row.mobile,
+          email: row.email,
+          status: row.status,
+          displayStatus: this.resolveKycDisplayStatus(row),
+          entityType:
+            orgType === OrganizationType.SUPER_DISTRIBUTOR ||
+            orgType === OrganizationType.DISTRIBUTOR
+              ? orgType
+              : 'RETAILER',
+          organizationId: row.organizationId,
+          createdAt: row.createdAt,
+          hasWallet,
+        };
+      }),
+    );
+  }
+
+  /**
+   * Provision a mobile number inside the caller's own downline.
+   * Hierarchy enforced: SUPER_DISTRIBUTOR may parent DISTRIBUTOR/MERCHANT,
+   * DISTRIBUTOR may parent MERCHANT only, retailers may not provision.
+   * Created records are plain CREATED merchants — approval stays ADMIN-only.
+   */
+  async provisionDownline(
+    actorMerchantId: string,
+    input: {
+      mobile: string;
+      entityType: string;
+      parentOrganizationId?: string;
+      businessName?: string;
+      contactPerson?: string;
+    },
+    actorEmail = 'downline',
+  ) {
+    const actor = await this.requireMerchant(actorMerchantId);
+    const actorOrgId = this.requireOrganizationId(actor);
+    const actorOrg = await this.organizations.requireOrg(actorOrgId);
+    if (
+      actorOrg.type !== OrganizationType.SUPER_DISTRIBUTOR &&
+      actorOrg.type !== OrganizationType.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only distributors can provision downline numbers',
+        403,
+      );
+    }
+    const subtree = new Set([
+      actorOrgId,
+      ...(await this.organizations.descendantIds(actorOrgId)),
+    ]);
+    const parentId =
+      input.parentOrganizationId && input.parentOrganizationId.trim()
+        ? input.parentOrganizationId.trim()
+        : actorOrgId;
+    if (!subtree.has(parentId)) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Parent entity is outside your network',
+        403,
+      );
+    }
+    const parentOrg = await this.organizations.requireOrg(parentId);
+    const childType =
+      input.entityType === 'DISTRIBUTOR' ? 'DISTRIBUTOR' : 'RETAILER';
+    if (
+      parentOrg.type === OrganizationType.DISTRIBUTOR &&
+      childType !== 'RETAILER'
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_HIERARCHY,
+        'Distributors can only provision retailers',
+        409,
+      );
+    }
+    if (
+      parentOrg.type !== OrganizationType.SUPER_DISTRIBUTOR &&
+      parentOrg.type !== OrganizationType.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_HIERARCHY,
+        'New entities must hang under a distributor in your network',
+        409,
+      );
+    }
+    const created = await this.create({
+      mobile: input.mobile,
+      entityType: childType,
+      parentOrganizationId: parentId,
+      businessName: input.businessName,
+      contactPerson: input.contactPerson,
+    });
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'MERCHANT',
+      action: 'DOWNLINE_PROVISIONED',
+      merchantId: created.id,
+      details: `${actor.businessName} provisioned ${created.mobile} as ${childType}`,
+    });
+    return created;
   }
 
   private resolveKycDisplayStatus(

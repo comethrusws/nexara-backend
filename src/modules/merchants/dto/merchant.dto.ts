@@ -163,6 +163,34 @@ export class SuspendMerchantDto {
   reason?: string;
 }
 
+/**
+ * Self-service provisioning by a distributor-tier user for their own
+ * downline. The backend pins the parent to the caller's subtree and
+ * enforces hierarchy rules — callers can never escalate or poach.
+ */
+export class ProvisionDownlineDto {
+  @IsString()
+  @Matches(MOBILE, { message: 'mobile must be 10 digits' })
+  mobile: string;
+
+  @IsIn(['DISTRIBUTOR', 'RETAILER', 'MERCHANT'], {
+    message: 'entityType must be DISTRIBUTOR or RETAILER',
+  })
+  entityType: string;
+
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @IsOptional()
+  @IsString()
+  businessName?: string;
+
+  @IsOptional()
+  @IsString()
+  contactPerson?: string;
+}
+
 export class RejectKycDto {
   @IsOptional()
   @IsString()
