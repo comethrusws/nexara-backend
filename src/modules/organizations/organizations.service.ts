@@ -153,7 +153,7 @@ export class OrganizationsService implements OnModuleInit {
     while (currentLevelIds.length > 0) {
       const children = await this.orgs.find({
         where: { parentId: In(currentLevelIds) },
-        select: ['id'],
+        select: { id: true },
       });
       const nextLevelIds: string[] = [];
       for (const child of children) {
@@ -177,7 +177,7 @@ export class OrganizationsService implements OnModuleInit {
     return descendants.includes(targetOrgId);
   }
 
-  async reassignParent(orgId: string, newParentId: string): Promise<Organization> {
+  async reassignParent(orgId: string, newParentId: string) {
     const org = await this.requireOrg(orgId);
     const newParent = await this.requireOrg(newParentId);
     this.assertChildAllowed(newParent.type, org.type);
