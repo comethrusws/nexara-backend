@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -38,7 +39,12 @@ import {
 import { MerchantsService } from './merchants.service';
 
 @Controller('ops/merchants')
-@Roles(UserRole.ADMIN, UserRole.OPS)
+@Roles(
+  UserRole.ADMIN,
+  UserRole.OPS,
+  UserRole.SUPER_DISTRIBUTOR,
+  UserRole.DISTRIBUTOR,
+)
 @ApiTags('Ops — Merchants')
 @ApiBearerAuth('JWT')
 export class MerchantsController {
@@ -48,21 +54,26 @@ export class MerchantsController {
   ) {}
 
   @Post()
-  create(@Body() body: CreateMerchantDto) {
-    return this.merchants.create(body);
+  create(@Body() body: CreateMerchantDto, @CurrentUser() user: AuthUser) {
+    return this.merchants.create(body, user);
   }
 
   @Get()
-  list(@Query('status') status?: string, @Query('search') search?: string) {
-    return this.merchants.list({ status, search });
+  list(
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @CurrentUser() user?: AuthUser,
+  ) {
+    return this.merchants.list({ status, search }, user);
   }
 
   @Get('network')
-  network() {
-    return this.merchants.network();
+  network(@CurrentUser() user?: AuthUser) {
+    return this.merchants.network(user);
   }
 
   @Get('kyc-verifications')
+  @Roles(UserRole.ADMIN, UserRole.OPS)
   @ApiOperation({ summary: 'List merchants for KYC review queue' })
   listKycVerifications(
     @Query('status') status?: string,
@@ -72,12 +83,14 @@ export class MerchantsController {
   }
 
   @Get('kyc-verifications/:id')
+  @Roles(UserRole.ADMIN, UserRole.OPS)
   @ApiOperation({ summary: 'Get KYC verification detail with document URLs' })
   getKycVerification(@Param('id') id: string) {
     return this.merchants.getKycVerification(id);
   }
 
   @Get('kyc/file')
+  @Roles(UserRole.ADMIN, UserRole.OPS)
   @ApiOperation({ summary: 'Stream a stored KYC document' })
   async streamKycFile(
     @Query('path') path: string,
@@ -93,8 +106,8 @@ export class MerchantsController {
   }
 
   @Get(':id')
-  get(@Param('id') id: string) {
-    return this.merchants.get(id);
+  get(@Param('id') id: string, @CurrentUser() user?: AuthUser) {
+    return this.merchants.get(id, user);
   }
 
   @Get(':id/kyc/presigned-urls')
@@ -108,7 +121,7 @@ export class MerchantsController {
     @Body() body: UpdateMerchantDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.merchants.update(id, body, user.email);
+    return this.merchants.update(id, body, user.email, user);
   }
 
   @Post(':id/kyc/aadhaar')
@@ -187,8 +200,8 @@ export class MerchantsController {
   }
 
   @Post(':id/activate')
-  activate(@Param('id') id: string) {
-    return this.merchants.activate(id);
+  activate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.merchants.activate(id, user);
   }
 
   @Post(':id/suspend')
@@ -197,10 +210,17 @@ export class MerchantsController {
     @Body() body: SuspendMerchantDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.merchants.suspend(id, body.reason, user.email);
+    return this.merchants.suspend(id, body.reason, user.email, user);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Remove a sub-entity or merchant from network' })
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.merchants.deleteMerchant(id, user.email, user);
   }
 
   @Post(':id/mpin/reset')
+  @Roles(UserRole.ADMIN, UserRole.OPS)
   @ApiOperation({
     summary: 'Clear merchant transaction PIN (ops)',
     description:

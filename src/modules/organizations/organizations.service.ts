@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { BankConnector } from './entities/bank-connector.entity';
 import { OrganizationFeature } from './entities/organization-feature.entity';
@@ -143,6 +143,55 @@ export class OrganizationsService implements OnModuleInit {
   async children(id: string) {
     await this.requireOrg(id);
     return this.list({ parentId: id });
+  }
+
+  async getDescendantOrgIds(rootOrgId: string): Promise<string[]> {
+    const descendantIds: string[] = [];
+    let currentLevelIds = [rootOrgId];
+    const visited = new Set<string>([rootOrgId]);
+
+    while (currentLevelIds.length > 0) {
+      const children = await this.orgs.find({
+        where: { parentId: In(currentLevelIds) },
+        select: ['id'],
+      });
+      const nextLevelIds: string[] = [];
+      for (const child of children) {
+        if (!visited.has(child.id)) {
+          visited.add(child.id);
+          descendantIds.push(child.id);
+          nextLevelIds.push(child.id);
+        }
+      }
+      currentLevelIds = nextLevelIds;
+    }
+
+    return descendantIds;
+  }
+
+  async isDescendant(rootOrgId: string, targetOrgId: string): Promise<boolean> {
+    if (rootOrgId === targetOrgId) {
+      return true;
+    }
+    const descendants = await this.getDescendantOrgIds(rootOrgId);
+    return descendants.includes(targetOrgId);
+  }
+
+  async reassignParent(orgId: string, newParentId: string): Promise<Organization> {
+    const org = await this.requireOrg(orgId);
+    const newParent = await this.requireOrg(newParentId);
+    this.assertChildAllowed(newParent.type, org.type);
+    const descendants = await this.getDescendantOrgIds(org.id);
+    if (descendants.includes(newParentId) || org.id === newParentId) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_HIERARCHY,
+        'Cannot reassign parent to a descendant (cycle detected)',
+        400,
+      );
+    }
+    org.parentId = newParentId;
+    await this.orgs.save(org);
+    return this.toView(org);
   }
 
   async setFeatures(

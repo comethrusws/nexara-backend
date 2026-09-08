@@ -51,6 +51,10 @@ describe('MerchantsService', () => {
     assertAncestorsActive: jest.fn(),
     assertFeature: jest.fn(),
     updateContactDetails: jest.fn(),
+    getDescendantOrgIds: jest.fn().mockResolvedValue([]),
+    isDescendant: jest.fn().mockResolvedValue(true),
+    reassignParent: jest.fn(),
+    children: jest.fn().mockResolvedValue([]),
   };
 
   let service: MerchantsService;
@@ -272,5 +276,140 @@ describe('MerchantsService', () => {
     await expect(
       service.streamKycFile('s3://test/kyc/m1/missing.jpg'),
     ).rejects.toMatchObject({ code: ErrorCodes.KYC_DOCUMENT_NOT_FOUND });
+  });
+
+  describe('Hierarchy & KYC Gating', () => {
+    it('blocks Super Distributor from adding children when their own KYC is pending', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'sd-1',
+        status: MerchantStatus.KYC_PENDING,
+      });
+
+      await expect(
+        service.create(
+          { mobile: '9999999999', entityType: 'DISTRIBUTOR' },
+          {
+            id: 'u-sd',
+            role: 'SUPER_DISTRIBUTOR' as any,
+            merchantId: 'sd-1',
+            organizationId: 'org-sd',
+            email: 'sd@test.com',
+            name: 'SD User',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.KYC_INCOMPLETE,
+      });
+    });
+
+    it('allows Super Distributor with active KYC to provision a Distributor', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'sd-1',
+        status: MerchantStatus.ACTIVE,
+      });
+      organizations.ensureSeeded.mockResolvedValueOnce({ id: 'org-admin' });
+      organizations.createMerchantOrganization.mockResolvedValueOnce({
+        id: 'org-dist-new',
+      });
+      merchants.create.mockReturnValue({
+        id: 'dist-new',
+        businessName: 'Dist New',
+        mobile: '9888888888',
+        status: MerchantStatus.CREATED,
+        dailyPayoutLimit: '100000.00',
+        feeType: 'FIXED',
+        feeValue: '10.00',
+        gstPercent: '18.00',
+        tier: 'SILVER',
+        channel: 'STANDARD',
+        organizationId: 'org-dist-new',
+      });
+      merchants.save.mockImplementation(async (m: any) => m);
+      kycRecords.create.mockReturnValue({});
+      kycRecords.save.mockResolvedValue({});
+      organizations.get.mockResolvedValue({ id: 'org-dist-new', type: 'DISTRIBUTOR', parentId: 'org-sd' });
+
+      const result = await service.create(
+        { mobile: '9888888888', entityType: 'DISTRIBUTOR' },
+        {
+          id: 'u-sd',
+          role: 'SUPER_DISTRIBUTOR' as any,
+          merchantId: 'sd-1',
+          organizationId: 'org-sd',
+          email: 'sd@test.com',
+          name: 'SD User',
+        },
+      );
+
+      expect(result).toBeDefined();
+      expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentId: 'org-sd',
+        }),
+      );
+    });
+
+    it('blocks Distributor from creating another Distributor', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'd-1',
+        status: MerchantStatus.ACTIVE,
+      });
+
+      await expect(
+        service.create(
+          { mobile: '9777777777', entityType: 'DISTRIBUTOR' },
+          {
+            id: 'u-dist',
+            role: 'DISTRIBUTOR' as any,
+            merchantId: 'd-1',
+            organizationId: 'org-dist',
+            email: 'dist@test.com',
+            name: 'Dist User',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.FORBIDDEN,
+      });
+    });
+
+    it('allows Admin to overrule and reassign an entity to a new parent', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'm-child',
+        businessName: 'Child Store',
+        organizationId: 'org-child',
+        status: MerchantStatus.ACTIVE,
+      });
+      organizations.get.mockResolvedValue({
+        id: 'org-child',
+        parentId: 'org-old-parent',
+      });
+      organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
+      merchants.save.mockImplementation(async (m: any) => m);
+
+      await service.update(
+        'm-child',
+        { parentOrganizationId: 'org-new-parent' },
+        'admin@nexara.com',
+        {
+          id: 'u-admin',
+          role: 'ADMIN' as any,
+          merchantId: null,
+          organizationId: 'org-admin',
+          email: 'admin@nexara.com',
+          name: 'Admin',
+        },
+      );
+
+      expect(organizations.reassignParent).toHaveBeenCalledWith(
+        'org-child',
+        'org-new-parent',
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ADMIN_OVERRULE_HIERARCHY',
+          merchantId: 'm-child',
+        }),
+      );
+    });
   });
 });

@@ -11,6 +11,11 @@ import { User } from './entities/user.entity';
 
 const MPIN_RESET_PURPOSE = 'MPIN_RESET';
 
+const isMerchantTierUser = (role: UserRole) =>
+  role === UserRole.MERCHANT ||
+  role === UserRole.DISTRIBUTOR ||
+  role === UserRole.SUPER_DISTRIBUTOR;
+
 @Injectable()
 export class UsersService implements OnModuleInit {
   constructor(
@@ -59,7 +64,7 @@ export class UsersService implements OnModuleInit {
     input: { email?: string; name?: string; password?: string },
   ): Promise<User> {
     const user = await this.requireActive(userId);
-    if (user.role !== UserRole.MERCHANT) {
+    if (!isMerchantTierUser(user.role)) {
       throw new NexaraError(
         ErrorCodes.FORBIDDEN,
         'Only merchant accounts can be updated through onboarding',
@@ -89,7 +94,7 @@ export class UsersService implements OnModuleInit {
 
   async findMerchantUser(merchantId: string): Promise<User | null> {
     return this.users.findOne({
-      where: { merchantId, role: UserRole.MERCHANT, status: 'ACTIVE' },
+      where: { merchantId, status: 'ACTIVE' },
     });
   }
 
@@ -125,7 +130,7 @@ export class UsersService implements OnModuleInit {
       );
     }
     const user = await this.requireActive(userId);
-    if (user.role !== UserRole.MERCHANT) {
+    if (!isMerchantTierUser(user.role)) {
       throw new NexaraError(
         ErrorCodes.FORBIDDEN,
         'Only merchant accounts can set a transaction PIN',
@@ -156,7 +161,7 @@ export class UsersService implements OnModuleInit {
 
   async requestMpinResetOtp(userId: string) {
     const user = await this.requireActive(userId);
-    if (user.role !== UserRole.MERCHANT) {
+    if (!isMerchantTierUser(user.role)) {
       throw new NexaraError(
         ErrorCodes.FORBIDDEN,
         'Only merchant accounts can reset a transaction PIN',
@@ -258,7 +263,7 @@ export class UsersService implements OnModuleInit {
       );
     }
     const user = await this.requireActive(userId);
-    if (user.role !== UserRole.MERCHANT) {
+    if (!isMerchantTierUser(user.role)) {
       throw new NexaraError(
         ErrorCodes.FORBIDDEN,
         'Only merchant accounts can reset a transaction PIN',
@@ -307,6 +312,7 @@ export class UsersService implements OnModuleInit {
     organizationId: string | null;
     password?: string;
     mpin?: string;
+    role?: UserRole;
   }): Promise<User> {
     const email = input.email.toLowerCase().trim();
     const existingEmail = await this.findByEmail(email);
@@ -333,13 +339,17 @@ export class UsersService implements OnModuleInit {
       email,
       name: input.name,
       mobile: input.mobile,
-      role: UserRole.MERCHANT,
+      role: input.role ?? UserRole.MERCHANT,
       merchantId: input.merchantId,
       organizationId: input.organizationId,
       passwordHash: await bcrypt.hash(password, 10),
       mpinHash: input.mpin ? await bcrypt.hash(input.mpin, 10) : null,
       status: 'ACTIVE',
     });
+    return this.users.save(user);
+  }
+
+  async saveUser(user: User): Promise<User> {
     return this.users.save(user);
   }
 

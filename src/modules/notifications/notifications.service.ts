@@ -176,11 +176,19 @@ export class NotificationsService {
     if (row.audience === NotificationAudience.MERCHANT) {
       return user.role === UserRole.MERCHANT;
     }
-    if (
-      row.audience === NotificationAudience.SUPER_DISTRIBUTOR ||
-      row.audience === NotificationAudience.DISTRIBUTOR
-    ) {
-      return user.role === UserRole.ADMIN || user.role === UserRole.OPS;
+    if (row.audience === NotificationAudience.SUPER_DISTRIBUTOR) {
+      return (
+        user.role === UserRole.SUPER_DISTRIBUTOR ||
+        user.role === UserRole.ADMIN ||
+        user.role === UserRole.OPS
+      );
+    }
+    if (row.audience === NotificationAudience.DISTRIBUTOR) {
+      return (
+        user.role === UserRole.DISTRIBUTOR ||
+        user.role === UserRole.ADMIN ||
+        user.role === UserRole.OPS
+      );
     }
     return false;
   }

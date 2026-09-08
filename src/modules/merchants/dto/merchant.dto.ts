@@ -280,6 +280,26 @@ export class VerifyPanDto {
 
 export class UpdateMerchantDto {
   @IsOptional()
+  @IsString()
+  businessName?: string;
+
+  @IsOptional()
+  @IsString()
+  contactPerson?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @IsOptional()
   @IsEnum(MerchantStatus)
   status?: MerchantStatus;
 

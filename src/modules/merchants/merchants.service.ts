@@ -12,7 +12,7 @@ import {
 } from '../../integrations/storage/storage.types';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
-import { UserRole } from '../auth/auth.constants';
+import { AuthUser, UserRole } from '../auth/auth.constants';
 import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -71,8 +71,126 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
-  async create(input: CreateMerchantDto) {
+  /**
+   * Asserts that a Super Distributor or Distributor has completed KYC and is ACTIVE
+   * before allowing them to add, remove, or manage sub-entities.
+   * Admin and Ops bypass this check as platform bosses.
+   */
+  async assertKycDoneForManagement(caller?: AuthUser): Promise<void> {
+    if (!caller) return;
+    if (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) {
+      return;
+    }
+    if (
+      caller.role === UserRole.SUPER_DISTRIBUTOR ||
+      caller.role === UserRole.DISTRIBUTOR
+    ) {
+      if (!caller.merchantId) {
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'Your account does not have an associated merchant profile',
+          403,
+        );
+      }
+      const callerMerchant = await this.merchants.findOne({
+        where: { id: caller.merchantId },
+      });
+      if (!callerMerchant || callerMerchant.status !== MerchantStatus.ACTIVE) {
+        throw new NexaraError(
+          ErrorCodes.KYC_INCOMPLETE,
+          'Your account KYC verification must be approved and active before you can manage sub-entities',
+          403,
+        );
+      }
+      return;
+    }
+    throw new NexaraError(
+      ErrorCodes.FORBIDDEN,
+      'Only Super Distributors, Distributors, or Administrators can manage sub-entities',
+      403,
+    );
+  }
+
+  /**
+   * Asserts that target organization / merchant belongs to the caller's hierarchy.
+   * Admin and Ops bypass this check.
+   */
+  async assertEntityInHierarchy(
+    caller: AuthUser,
+    targetMerchant: Merchant,
+  ): Promise<void> {
+    if (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) {
+      return;
+    }
+    if (!caller.organizationId || !targetMerchant.organizationId) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Target entity is not within your hierarchy',
+        403,
+      );
+    }
+    const isChild = await this.organizations.isDescendant(
+      caller.organizationId,
+      targetMerchant.organizationId,
+    );
+    if (!isChild) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Target entity is not within your hierarchy',
+        403,
+      );
+    }
+  }
+
+  async create(input: CreateMerchantDto, caller?: AuthUser) {
     const admin = await this.organizations.ensureSeeded();
+
+    if (caller) {
+      await this.assertKycDoneForManagement(caller);
+
+      if (caller.role === UserRole.SUPER_DISTRIBUTOR) {
+        const requestedType = input.entityType?.toUpperCase();
+        if (requestedType === 'SUPER_DISTRIBUTOR') {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Super Distributors cannot create other Super Distributors',
+            403,
+          );
+        }
+        if (input.parentOrganizationId && input.parentOrganizationId.trim()) {
+          const targetParent = input.parentOrganizationId.trim();
+          const isValidParent =
+            targetParent === caller.organizationId ||
+            (await this.organizations.isDescendant(
+              caller.organizationId!,
+              targetParent,
+            ));
+          if (!isValidParent) {
+            throw new NexaraError(
+              ErrorCodes.FORBIDDEN,
+              'Parent organization must be within your hierarchy',
+              403,
+            );
+          }
+        } else {
+          input.parentOrganizationId = caller.organizationId!;
+        }
+      } else if (caller.role === UserRole.DISTRIBUTOR) {
+        const requestedType = input.entityType?.toUpperCase();
+        if (
+          requestedType === 'DISTRIBUTOR' ||
+          requestedType === 'SUPER_DISTRIBUTOR'
+        ) {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Distributors can only create Retailers / Merchants',
+            403,
+          );
+        }
+        input.parentOrganizationId = caller.organizationId!;
+      }
+    }
+
     const parentId =
       input.parentOrganizationId && input.parentOrganizationId.trim()
         ? input.parentOrganizationId
@@ -161,30 +279,51 @@ export class MerchantsService implements OnModuleInit {
       });
     }
     await this.audit.record({
-      actorEmail: 'system',
-      actorRole: 'ADMIN',
+      actorEmail: caller?.email ?? 'system',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_CREATED',
       merchantId: saved.id,
-      details: `Created merchant ${saved.businessName}`,
+      details: `Created merchant ${saved.businessName}${caller ? ` under ${caller.role}` : ''}`,
     });
     return this.toView(saved);
   }
 
-  async get(id: string) {
-    return this.toView(await this.requireMerchant(id));
+  async get(id: string, caller?: AuthUser) {
+    const merchant = await this.requireMerchant(id);
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      if (merchant.id !== caller.merchantId) {
+        await this.assertEntityInHierarchy(caller, merchant);
+      }
+    } else if (caller && caller.role === UserRole.MERCHANT) {
+      if (merchant.id !== caller.merchantId) {
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'You do not have access to this merchant profile',
+          403,
+        );
+      }
+    }
+    return this.toView(merchant);
   }
 
   async findByOrganizationId(organizationId: string): Promise<Merchant | null> {
     return this.merchants.findOne({ where: { organizationId } });
   }
 
-  async list(filters?: { status?: string; search?: string }) {
-    const filtered = await this.findFilteredMerchants(filters);
+  async list(filters?: { status?: string; search?: string }, caller?: AuthUser) {
+    const filtered = await this.findFilteredMerchants(filters, caller);
     return Promise.all(filtered.map((row) => this.toView(row)));
   }
 
-  async listKycVerifications(filters?: { status?: string; search?: string }) {
-    const filtered = await this.findFilteredMerchants(filters);
+  async listKycVerifications(
+    filters?: { status?: string; search?: string },
+    caller?: AuthUser,
+  ) {
+    const filtered = await this.findFilteredMerchants(filters, caller);
     return filtered.map((row) => this.toKycVerificationListItem(row));
   }
 
@@ -332,9 +471,104 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
-  async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
+  async update(
+    id: string,
+    input: UpdateMerchantDto,
+    actorEmail = 'ops',
+    caller?: AuthUser,
+  ) {
     const merchant = await this.requireMerchant(id);
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+
+      if (
+        input.parentOrganizationId &&
+        merchant.organizationId &&
+        input.parentOrganizationId !== merchant.organizationId
+      ) {
+        const isAllowed = await this.organizations.isDescendant(
+          caller.organizationId!,
+          input.parentOrganizationId,
+        );
+        if (!isAllowed) {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Cannot reassign entity to an organization outside your hierarchy',
+            403,
+          );
+        }
+        await this.organizations.reassignParent(
+          merchant.organizationId,
+          input.parentOrganizationId,
+        );
+      }
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (input.parentOrganizationId && merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        if (currentOrg.parentId !== input.parentOrganizationId) {
+          await this.organizations.reassignParent(
+            merchant.organizationId,
+            input.parentOrganizationId,
+          );
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_HIERARCHY',
+            merchantId: merchant.id,
+            details: `Admin reassigned entity parent from ${currentOrg.parentId} to ${input.parentOrganizationId}`,
+            previousValue: currentOrg.parentId,
+            newValue: input.parentOrganizationId,
+          });
+        }
+      }
+
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE',
+            merchantId: merchant.id,
+            details: `Admin overruled settings for entity ${merchant.businessName} under downline ${currentOrg.parentId}`,
+          });
+        }
+      }
+    }
+
     const previous = { status: merchant.status, tier: merchant.tier };
+    if (input.businessName) {
+      merchant.businessName = input.businessName;
+    }
+    if (input.contactPerson) {
+      merchant.contactPerson = input.contactPerson;
+    }
+    if (input.email !== undefined) {
+      merchant.email = input.email;
+    }
+    if (input.address) {
+      merchant.address = input.address;
+    }
+    if (
+      merchant.organizationId &&
+      (input.businessName || input.contactPerson || input.email)
+    ) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        name: input.businessName,
+        contactPerson: input.contactPerson,
+        email: input.email,
+      });
+    }
     if (input.status && input.status !== merchant.status) {
       merchant.status = input.status;
     }
@@ -387,7 +621,7 @@ export class MerchantsService implements OnModuleInit {
     await this.merchants.save(merchant);
     await this.audit.record({
       actorEmail,
-      actorRole: 'ADMIN',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_UPDATED',
       merchantId: merchant.id,
       details: input.reason ?? 'Merchant record updated',
@@ -401,7 +635,7 @@ export class MerchantsService implements OnModuleInit {
     validateFeeSlabsJson(feeSlabsJson);
   }
 
-  async network() {
+  async network(caller?: AuthUser) {
     const orgs = await this.organizations.list();
     const merchants = await this.merchants.find();
     const byParent = new Map<string | null, typeof orgs>();
@@ -431,6 +665,17 @@ export class MerchantsService implements OnModuleInit {
         children: await Promise.all(children.map((child) => attach(child))),
       };
     };
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR) &&
+      caller.organizationId
+    ) {
+      const userRoots = orgs.filter((org) => org.id === caller.organizationId);
+      return Promise.all(userRoots.map((root) => attach(root)));
+    }
+
     const roots = orgs.filter((org) => !org.parentId);
     return Promise.all(roots.map((root) => attach(root)));
   }
@@ -484,8 +729,35 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async activate(id: string) {
+  async activate(id: string, caller?: AuthUser) {
     const merchant = await this.requireMerchant(id);
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail: caller.email ?? 'admin',
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_ACTIVATE',
+            merchantId: merchant.id,
+            details: `Admin overruled and activated entity ${merchant.businessName}`,
+          });
+        }
+      }
+    }
+
     if (merchant.status === MerchantStatus.ACTIVE) {
       return this.toView(merchant);
     }
@@ -568,8 +840,40 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async suspend(id: string, reason?: string, actorEmail = 'ops') {
+  async suspend(
+    id: string,
+    reason?: string,
+    actorEmail = 'ops',
+    caller?: AuthUser,
+  ) {
     const merchant = await this.requireMerchant(id);
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_SUSPEND',
+            merchantId: merchant.id,
+            details: `Admin overruled and suspended entity ${merchant.businessName}`,
+          });
+        }
+      }
+    }
+
     if (merchant.status !== MerchantStatus.ACTIVE) {
       throw new NexaraError(
         ErrorCodes.MERCHANT_INACTIVE,
@@ -581,12 +885,60 @@ export class MerchantsService implements OnModuleInit {
     await this.merchants.save(merchant);
     await this.audit.record({
       actorEmail,
-      actorRole: 'ADMIN',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_SUSPENDED',
       merchantId: merchant.id,
       details: reason ?? 'Merchant suspended',
     });
     return this.toView(merchant);
+  }
+
+  async deleteMerchant(id: string, actorEmail: string, caller?: AuthUser) {
+    const merchant = await this.requireMerchant(id);
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    }
+
+    if (merchant.organizationId) {
+      const children = await this.organizations.children(
+        merchant.organizationId,
+      );
+      if (children && children.length > 0) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_HIERARCHY,
+          'Cannot remove entity that still has sub-distributors or retailers. Reassign or remove them first.',
+          409,
+        );
+      }
+    }
+
+    merchant.status = MerchantStatus.SUSPENDED;
+    if (!merchant.businessName.startsWith('[REMOVED]')) {
+      merchant.businessName = `[REMOVED] ${merchant.businessName}`;
+    }
+    await this.merchants.save(merchant);
+
+    const isOverrule =
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) &&
+      merchant.organizationId &&
+      (await this.organizations.get(merchant.organizationId)).parentId !==
+        (await this.organizations.ensureSeeded()).id;
+
+    await this.audit.record({
+      actorEmail,
+      actorRole: caller?.role ?? 'ADMIN',
+      action: isOverrule ? 'ADMIN_OVERRULE_REMOVE' : 'ENTITY_REMOVED',
+      merchantId: merchant.id,
+      details: `Entity removed from active network by ${caller?.role ?? 'ADMIN'} (${actorEmail})`,
+    });
+
+    return { success: true, removed: true };
   }
 
   async getKycPresignedUrls(id: string) {
@@ -723,7 +1075,11 @@ export class MerchantsService implements OnModuleInit {
     const existingUser = await this.users.findByMobile(mobile);
 
     if (existingUser) {
-      if (existingUser.role !== UserRole.MERCHANT || !existingUser.merchantId) {
+      const isEntityRole =
+        existingUser.role === UserRole.MERCHANT ||
+        existingUser.role === UserRole.DISTRIBUTOR ||
+        existingUser.role === UserRole.SUPER_DISTRIBUTOR;
+      if (!isEntityRole || !existingUser.merchantId) {
         throw new NexaraError(
           ErrorCodes.INVALID_REQUEST,
           'This mobile number is already linked to another account',
@@ -821,6 +1177,19 @@ export class MerchantsService implements OnModuleInit {
         name: input.businessName,
       });
     }
+    let entityUserRole: UserRole = UserRole.MERCHANT;
+    if (merchant.organizationId) {
+      try {
+        const org = await this.organizations.get(merchant.organizationId);
+        if (org?.type === OrganizationType.SUPER_DISTRIBUTOR) {
+          entityUserRole = UserRole.SUPER_DISTRIBUTOR;
+        } else if (org?.type === OrganizationType.DISTRIBUTOR) {
+          entityUserRole = UserRole.DISTRIBUTOR;
+        }
+      } catch {
+        // fallback to MERCHANT
+      }
+    }
     await this.users.createMerchantUser({
       email,
       name: input.contactPerson,
@@ -829,6 +1198,7 @@ export class MerchantsService implements OnModuleInit {
       organizationId: merchant.organizationId,
       password: input.password,
       mpin: input.mpin,
+      role: entityUserRole,
     });
     return this.finalizeSelfServeOnboarding(merchant.id, input);
   }
@@ -1210,11 +1580,40 @@ export class MerchantsService implements OnModuleInit {
     return merchant.organizationId;
   }
 
-  private async findFilteredMerchants(filters?: {
-    status?: string;
-    search?: string;
-  }): Promise<Merchant[]> {
+  private async findFilteredMerchants(
+    filters?: {
+      status?: string;
+      search?: string;
+    },
+    caller?: AuthUser,
+  ): Promise<Merchant[]> {
+    let allowedOrgIds: string[] | null = null;
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      if (!caller.organizationId) {
+        return [];
+      }
+      const descendants = await this.organizations.getDescendantOrgIds(
+        caller.organizationId,
+      );
+      allowedOrgIds = [caller.organizationId, ...descendants];
+    } else if (caller && caller.role === UserRole.MERCHANT) {
+      allowedOrgIds = caller.organizationId ? [caller.organizationId] : [];
+    }
+
+    const where: any = {};
+    if (allowedOrgIds !== null) {
+      if (allowedOrgIds.length === 0) {
+        return [];
+      }
+      where.organizationId = In(allowedOrgIds);
+    }
+
     const rows = await this.merchants.find({
+      where,
       relations: { kyc: true },
       order: { createdAt: 'DESC' },
     });

@@ -40,7 +40,7 @@ export class SessionController {
   }
 
   @Patch('onboarding')
-  @Roles(UserRole.MERCHANT)
+  @Roles(UserRole.MERCHANT, UserRole.DISTRIBUTOR, UserRole.SUPER_DISTRIBUTOR)
   @ApiOperation({
     summary: 'Update pending KYC / onboarding submission',
     description:
