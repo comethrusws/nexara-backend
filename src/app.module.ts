@@ -27,58 +27,21 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: async (config: ConfigService) => {
-        const ssl =
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres',
+        host: config.get<string>('database.host'),
+        port: config.get<number>('database.port'),
+        username: config.get<string>('database.username'),
+        password: config.get<string>('database.password'),
+        database: config.get<string>('database.name'),
+        ssl:
           config.get<boolean>('database.ssl') === true
             ? { rejectUnauthorized: false }
-            : false;
-
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { Client } = require('pg');
-          const client = new Client({
-            host: config.get<string>('database.host'),
-            port: config.get<number>('database.port'),
-            user: config.get<string>('database.username'),
-            password: config.get<string>('database.password'),
-            database: config.get<string>('database.name'),
-            ssl,
-          });
-          await client.connect();
-          try {
-            await client.query(`
-              DO $$
-              BEGIN
-                IF EXISTS (
-                  SELECT 1 FROM information_schema.columns 
-                  WHERE table_name = 'app_user' AND column_name = 'role'
-                ) THEN
-                  UPDATE "app_user" SET "role" = 'MERCHANT' WHERE "role" IS NULL;
-                  ALTER TABLE "app_user" ALTER COLUMN "role" TYPE character varying(32);
-                  ALTER TABLE "app_user" ALTER COLUMN "role" SET DEFAULT 'MERCHANT';
-                END IF;
-              END $$;
-            `);
-          } finally {
-            await client.end().catch(() => {});
-          }
-        } catch (err: any) {
-          console.warn('[TypeORM Pre-Sync] Note:', err?.message || err);
-        }
-
-        return {
-          type: 'postgres',
-          host: config.get<string>('database.host'),
-          port: config.get<number>('database.port'),
-          username: config.get<string>('database.username'),
-          password: config.get<string>('database.password'),
-          database: config.get<string>('database.name'),
-          ssl,
-          autoLoadEntities: true,
-          synchronize: config.get<boolean>('database.synchronize') === true,
-          logging: ['error'],
-        };
-      },
+            : false,
+        autoLoadEntities: true,
+        synchronize: config.get<boolean>('database.synchronize') === true,
+        logging: ['error'],
+      }),
     }),
     FineractModule,
     AuthModule,
