@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -11,7 +19,10 @@ import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UsersService } from '../auth/users.service';
-import { UpdatePendingOnboardingDto } from '../merchants/dto/merchant.dto';
+import {
+  ProvisionDownlineDto,
+  UpdatePendingOnboardingDto,
+} from '../merchants/dto/merchant.dto';
 import { MerchantsService } from '../merchants/merchants.service';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -37,6 +48,36 @@ export class SessionController {
       merchant: await this.merchants.get(user.merchantId),
       hasMpin: Boolean(merchantUser?.mpinHash),
     };
+  }
+
+  @Get('downline')
+  @Roles(UserRole.SUPER_DISTRIBUTOR, UserRole.DISTRIBUTOR)
+  @ApiOperation({
+    summary: 'Flat downline network for Super Distributor / Distributor portals',
+  })
+  @ApiResponse({ status: 200, description: 'Array of downline merchant members' })
+  @ApiResponse({ status: 403, description: 'Caller is not a partner role' })
+  listDownline(@CurrentUser() user: AuthUser) {
+    return this.merchants.listDownline(user);
+  }
+
+  @Post('provision')
+  @HttpCode(201)
+  @Roles(UserRole.SUPER_DISTRIBUTOR, UserRole.DISTRIBUTOR)
+  @ApiOperation({
+    summary: 'Provision a child mobile under the caller network',
+    description:
+      'Super Distributors may provision DISTRIBUTOR or RETAILER. Distributors may provision RETAILER only. Caller must be ACTIVE.',
+  })
+  @ApiResponse({ status: 201, description: 'Child merchant provisioned' })
+  @ApiResponse({ status: 400, description: 'Invalid mobile or entityType' })
+  @ApiResponse({ status: 403, description: 'Outside network / KYC incomplete' })
+  @ApiResponse({ status: 409, description: 'Already provisioned / hierarchy conflict' })
+  provision(
+    @CurrentUser() user: AuthUser,
+    @Body() body: ProvisionDownlineDto,
+  ) {
+    return this.merchants.provisionDownline(user, body);
   }
 
   @Patch('onboarding')

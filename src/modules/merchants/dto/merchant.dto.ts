@@ -398,6 +398,37 @@ export class OnboardingExtrasDto {
 }
 
 /** Authenticated merchant corrections while KYC is still pending. */
+/** Partner (SD/Dist) provision of a child mobile under their network. */
+export class ProvisionDownlineDto {
+  @ApiProperty({ example: '9876543210' })
+  @IsString()
+  @Matches(MOBILE, { message: 'mobile must be 10 digits' })
+  mobile: string;
+
+  @ApiProperty({ enum: ['DISTRIBUTOR', 'RETAILER'] })
+  @IsIn(['DISTRIBUTOR', 'RETAILER'])
+  entityType: 'DISTRIBUTOR' | 'RETAILER';
+
+  @ApiPropertyOptional({
+    description: 'Parent org in caller network; defaults to caller org',
+  })
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @ApiPropertyOptional({ example: 'Sharma Distributors' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  businessName?: string;
+
+  @ApiPropertyOptional({ example: 'Rahul Sharma' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  contactPerson?: string;
+}
+
 export class UpdatePendingOnboardingDto {
   @ApiPropertyOptional({ example: 'Sharma General Store' })
   @IsOptional()

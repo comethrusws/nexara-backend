@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import {
   FINERACT_PORT,
@@ -193,6 +193,18 @@ export class WalletService {
       );
     }
     return mapping;
+  }
+
+  /** Returns merchant IDs that already have a wallet mapping (no Fineract call). */
+  async findMappedMerchantIds(merchantIds: string[]): Promise<Set<string>> {
+    if (merchantIds.length === 0) {
+      return new Set();
+    }
+    const rows = await this.mappings.find({
+      where: { merchantId: In(merchantIds) },
+      select: ['merchantId'],
+    });
+    return new Set(rows.map((row) => row.merchantId));
   }
 
   private async toView(

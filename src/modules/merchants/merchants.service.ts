@@ -24,6 +24,7 @@ import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
   CreateMerchantDto,
+  ProvisionDownlineDto,
   PublicOnboardingDto,
   UpdateMerchantDto,
   UpdatePendingOnboardingDto,
@@ -317,6 +318,120 @@ export class MerchantsService implements OnModuleInit {
   async list(filters?: { status?: string; search?: string }, caller?: AuthUser) {
     const filtered = await this.findFilteredMerchants(filters, caller);
     return Promise.all(filtered.map((row) => this.toView(row)));
+  }
+
+  /**
+   * Flat downline for Super Distributor / Distributor portals.
+   * Scoped to descendant orgs only (excludes the caller's own merchant).
+   */
+  async listDownline(caller: AuthUser) {
+    if (
+      caller.role !== UserRole.SUPER_DISTRIBUTOR &&
+      caller.role !== UserRole.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only Super Distributors and Distributors can view a downline network',
+        403,
+      );
+    }
+    if (!caller.organizationId) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Your account does not have an associated organization',
+        403,
+      );
+    }
+
+    const descendantOrgIds = await this.organizations.getDescendantOrgIds(
+      caller.organizationId,
+    );
+    if (descendantOrgIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.merchants.find({
+      where: { organizationId: In(descendantOrgIds) },
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+
+    const orgs = await this.organizations.list();
+    const orgById = new Map(orgs.map((org) => [org.id, org]));
+    const walletIds = await this.wallets.findMappedMerchantIds(
+      rows.map((row) => row.id),
+    );
+
+    return rows.map((merchant) => {
+      const org = merchant.organizationId
+        ? orgById.get(merchant.organizationId)
+        : undefined;
+      const entityType =
+        org?.type === OrganizationType.MERCHANT || !org?.type
+          ? 'RETAILER'
+          : org.type;
+      return {
+        id: merchant.id,
+        businessName: merchant.businessName,
+        contactPerson: merchant.contactPerson,
+        mobile: merchant.mobile,
+        email: merchant.email,
+        status: merchant.status,
+        displayStatus: this.resolveKycDisplayStatus(merchant),
+        entityType,
+        organizationId: merchant.organizationId,
+        createdAt: merchant.createdAt,
+        hasWallet: walletIds.has(merchant.id),
+      };
+    });
+  }
+
+  /**
+   * Partner self-service provision of a child mobile (SD → Dist/Retailer, Dist → Retailer).
+   */
+  async provisionDownline(caller: AuthUser, input: ProvisionDownlineDto) {
+    if (
+      caller.role !== UserRole.SUPER_DISTRIBUTOR &&
+      caller.role !== UserRole.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only Super Distributors and Distributors can provision downline entities',
+        403,
+      );
+    }
+
+    const mobile = input.mobile.replace(/\D/g, '').slice(-10);
+    if (!/^\d{10}$/.test(mobile)) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'mobile must be 10 digits',
+        400,
+      );
+    }
+
+    const existing = await this.merchants.findOne({
+      where: { mobile },
+      order: { createdAt: 'DESC' },
+    });
+    if (existing) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already provisioned',
+        409,
+      );
+    }
+
+    return this.create(
+      {
+        mobile,
+        entityType: input.entityType,
+        parentOrganizationId: input.parentOrganizationId,
+        businessName: input.businessName,
+        contactPerson: input.contactPerson,
+      },
+      caller,
+    );
   }
 
   async listKycVerifications(

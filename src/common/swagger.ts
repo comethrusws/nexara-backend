@@ -33,6 +33,7 @@ export function setupSwagger(app: INestApplication): void {
         'Ops can clear a merchant PIN: `POST /v1/ops/merchants/:id/mpin/reset`.',
         '',
         '**Pending KYC edits:** After onboarding, merchants can correct profile/selfie via `PATCH /v1/me/onboarding` while status is `KYC_PENDING` (mobile/PAN/Aadhaar locked).',
+        '**Partner downline:** Super Distributors / Distributors use `GET /v1/me/downline` (flat network) and `POST /v1/me/provision` (child mobile). Caller must be ACTIVE.',
         '',
         'Written guide: `docs/END-TO-END.md`.',
       ].join('\n\n'),
