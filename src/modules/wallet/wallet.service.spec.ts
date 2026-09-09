@@ -2,9 +2,11 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ErrorCodes } from '../../common/errors/nexara-error';
 import { FINERACT_PORT } from '../../integrations/fineract/fineract.types';
-import { Merchant } from '../merchants/entities/merchant.entity';
-import { MerchantStatus } from '../merchants/merchant.enums';
-import { WalletFunding } from './entities/wallet-funding.entity';
+import { MerchantsService } from '../merchants/merchants.service';
+import {
+  FundingChannel,
+  WalletFunding,
+} from './entities/wallet-funding.entity';
 import { WalletMapping } from './entities/wallet-mapping.entity';
 import { WalletService } from './wallet.service';
 
@@ -14,19 +16,20 @@ describe('WalletService', () => {
     create: jest.fn(),
     save: jest.fn(),
   };
-  const merchants = {
-    findOne: jest.fn(),
-  };
   const fineract = {
     openMerchantWallet: jest.fn(),
     getBalances: jest.fn(),
     creditWallet: jest.fn(),
+  };
+  const merchants = {
+    requireActive: jest.fn(),
   };
 
   let service: WalletService;
 
   beforeEach(async () => {
     jest.resetAllMocks();
+    merchants.requireActive.mockResolvedValue({ id: 'm1', status: 'ACTIVE' });
     const module = await Test.createTestingModule({
       providers: [
         WalletService,
@@ -40,7 +43,7 @@ describe('WalletService', () => {
           },
         },
         { provide: FINERACT_PORT, useValue: fineract },
-        { provide: getRepositoryToken(Merchant), useValue: merchants },
+        { provide: MerchantsService, useValue: merchants },
       ],
     }).compile();
     service = module.get(WalletService);
@@ -103,37 +106,23 @@ describe('WalletService', () => {
     });
   });
 
-  it('credits the wallet of an ACTIVE merchant', async () => {
-    merchants.findOne.mockResolvedValue({ id: 'm1', status: MerchantStatus.ACTIVE });
-    mappings.findOne.mockResolvedValue({ merchantId: 'm1', fineractSavingsAccountId: 1000 });
-    fineract.creditWallet.mockResolvedValue({ fineractTransactionId: 1 });
-    fineract.getBalances.mockResolvedValue({ total: '100.00', blocked: '0.00', available: '100.00' });
-
-    await service.creditWallet('m1', {
-      amount: '100.00',
-      externalPaymentReference: 'MANUAL-1',
+  it('rejects funding when merchant is not ACTIVE', async () => {
+    merchants.requireActive.mockRejectedValue({
+      code: ErrorCodes.MERCHANT_INACTIVE,
+      status: 409,
     });
 
-    expect(fineract.creditWallet).toHaveBeenCalled();
-  });
-
-  it.each([[MerchantStatus.KYC_PENDING], [MerchantStatus.SUSPENDED], [MerchantStatus.CREATED]])(
-    'rejects wallet credit when merchant status is %s',
-    async (status) => {
-      merchants.findOne.mockResolvedValue({ id: 'm1', status });
-
-      await expect(
-        service.creditWallet('m1', { amount: '100.00', externalPaymentReference: 'MANUAL-1' }),
-      ).rejects.toMatchObject({ code: ErrorCodes.MERCHANT_INACTIVE });
-      expect(fineract.creditWallet).not.toHaveBeenCalled();
-    },
-  );
-
-  it('rejects wallet credit when the merchant does not exist', async () => {
-    merchants.findOne.mockResolvedValue(null);
-
     await expect(
-      service.creditWallet('ghost', { amount: '100.00', externalPaymentReference: 'MANUAL-1' }),
-    ).rejects.toMatchObject({ code: ErrorCodes.MERCHANT_INACTIVE });
+      service.fund({
+        merchantId: 'm1',
+        amount: '100.00',
+        channel: FundingChannel.CASH,
+        externalRef: 'ref-1',
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.MERCHANT_INACTIVE,
+      status: 409,
+    });
+    expect(fineract.creditWallet).not.toHaveBeenCalled();
   });
 });

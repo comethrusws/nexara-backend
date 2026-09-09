@@ -6,6 +6,8 @@ Fineract is the live financial ledger. DigiLocker KYC and bank payouts are adapt
 
 ## Hierarchy
 
+![Roles Hierarchy Model](docs/images/roles-hierarchy-model.jpeg)
+
 ```
 ADMIN
  └── SUPER_DISTRIBUTOR

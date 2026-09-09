@@ -38,6 +38,8 @@ async function bootstrap() {
   app.useGlobalFilters(new ApiExceptionFilter());
   app.enableShutdownHooks();
 
+  setupSwagger(app);
+
   await app.listen(port);
   Logger.log(`Nexara API listening on http://localhost:${port}/v1`);
   Logger.log(`Swagger UI http://localhost:${port}/docs`);

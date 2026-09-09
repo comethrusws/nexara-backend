@@ -16,7 +16,7 @@ import { BbpsService } from './bbps.service';
 import { BbpsPayDto } from '../portal/dto/portal.dto';
 
 @Controller('me/bill-payments')
-@Roles(UserRole.MERCHANT)
+@Roles(UserRole.MERCHANT, UserRole.DISTRIBUTOR, UserRole.SUPER_DISTRIBUTOR)
 @ApiTags('Merchant — BBPS')
 @ApiBearerAuth('JWT')
 export class BbpsController {

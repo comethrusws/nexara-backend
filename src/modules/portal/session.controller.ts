@@ -1,14 +1,28 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import type { AuthUser } from '../auth/auth.constants';
+import { UserRole } from '../auth/auth.constants';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { UsersService } from '../auth/users.service';
-import { ProvisionDownlineDto } from '../merchants/dto/merchant.dto';
+import {
+  ProvisionDownlineDto,
+  UpdatePendingOnboardingDto,
+} from '../merchants/dto/merchant.dto';
 import { MerchantsService } from '../merchants/merchants.service';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -37,40 +51,64 @@ export class SessionController {
   }
 
   @Get('downline')
+  @Roles(UserRole.SUPER_DISTRIBUTOR, UserRole.DISTRIBUTOR)
   @ApiOperation({
-    summary: 'Distributor downline network with activation status',
-    description:
-      'Read-only view of merchants below the caller’s organization. No KYC or activation powers are exposed here.',
+    summary: 'Flat downline network for Super Distributor / Distributor portals',
   })
-  async downline(@CurrentUser() user: AuthUser) {
-    if (!user.merchantId) {
-      throw new NexaraError(
-        ErrorCodes.UNAUTHORIZED,
-        'No merchant linked to this session',
-        401,
-      );
-    }
-    return this.merchants.getDownline(user.merchantId);
+  @ApiResponse({ status: 200, description: 'Array of downline merchant members' })
+  @ApiResponse({ status: 403, description: 'Caller is not a partner role' })
+  listDownline(@CurrentUser() user: AuthUser) {
+    return this.merchants.listDownline(user);
   }
 
   @Post('provision')
+  @HttpCode(201)
+  @Roles(UserRole.SUPER_DISTRIBUTOR, UserRole.DISTRIBUTOR)
   @ApiOperation({
-    summary: 'Provision a mobile number inside the caller’s downline',
+    summary: 'Provision a child mobile under the caller network',
     description:
-      'Creates a CREATED merchant under an organization in the caller’s network. Approval and wallet activation stay ADMIN-only.',
+      'Super Distributors may provision DISTRIBUTOR or RETAILER. Distributors may provision RETAILER only. Caller must be ACTIVE.',
   })
-  async provisionDownline(
+  @ApiResponse({ status: 201, description: 'Child merchant provisioned' })
+  @ApiResponse({ status: 400, description: 'Invalid mobile or entityType' })
+  @ApiResponse({ status: 403, description: 'Outside network / KYC incomplete' })
+  @ApiResponse({ status: 409, description: 'Already provisioned / hierarchy conflict' })
+  provision(
     @CurrentUser() user: AuthUser,
     @Body() body: ProvisionDownlineDto,
   ) {
+    return this.merchants.provisionDownline(user, body);
+  }
+
+  @Patch('onboarding')
+  @Roles(UserRole.MERCHANT, UserRole.DISTRIBUTOR, UserRole.SUPER_DISTRIBUTOR)
+  @ApiOperation({
+    summary: 'Update pending KYC / onboarding submission',
+    description:
+      'Allows a logged-in merchant to correct profile, location, or selfie while status is CREATED or KYC_PENDING. Mobile, PAN, and Aadhaar are locked.',
+  })
+  @ApiResponse({ status: 200, description: 'Pending onboarding updated' })
+  @ApiResponse({
+    status: 409,
+    description: 'Merchant is not in an editable KYC state',
+  })
+  updateOnboarding(
+    @CurrentUser() user: AuthUser,
+    @Body() body: UpdatePendingOnboardingDto,
+  ) {
     if (!user.merchantId) {
       throw new NexaraError(
-        ErrorCodes.UNAUTHORIZED,
-        'No merchant linked to this session',
-        401,
+        ErrorCodes.FORBIDDEN,
+        'Only merchant accounts can update onboarding',
+        403,
       );
     }
-    return this.merchants.provisionDownline(user.merchantId, body, user.email);
+    return this.merchants.updatePendingOnboarding(
+      user.merchantId,
+      user.id,
+      body,
+      user.email,
+    );
   }
 
   @Get('notifications')

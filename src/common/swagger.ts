@@ -1,7 +1,10 @@
 import { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { LoginDto, RequestOtpDto, VerifyOtpDto } from '../modules/auth/dto/auth.dto';
-import { PublicOnboardingDto } from '../modules/merchants/dto/merchant.dto';
+import {
+  PublicOnboardingDto,
+  UpdatePendingOnboardingDto,
+} from '../modules/merchants/dto/merchant.dto';
 import { BeneficiaryDto } from '../modules/payouts/dto/payout.dto';
 import {
   BbpsPayDto,
@@ -29,6 +32,9 @@ export function setupSwagger(app: INestApplication): void {
         'Change PIN: `POST /v1/me/mpin` (with currentMpin). Forgot PIN: `POST /v1/me/mpin/reset/request` then `POST /v1/me/mpin/reset`.',
         'Ops can clear a merchant PIN: `POST /v1/ops/merchants/:id/mpin/reset`.',
         '',
+        '**Pending KYC edits:** After onboarding, merchants can correct profile/selfie via `PATCH /v1/me/onboarding` while status is `KYC_PENDING` (mobile/PAN/Aadhaar locked).',
+        '**Partner downline:** Super Distributors / Distributors use `GET /v1/me/downline` (flat network) and `POST /v1/me/provision` (child mobile). Caller must be ACTIVE.',
+        '',
         'Written guide: `docs/END-TO-END.md`.',
       ].join('\n\n'),
     )
@@ -39,7 +45,7 @@ export function setupSwagger(app: INestApplication): void {
     )
     .addTag('Auth', 'Login and OTP')
     .addTag('Onboarding', 'Public self-serve merchant registration')
-    .addTag('Session', 'Current user profile')
+    .addTag('Session', 'Current user profile and pending onboarding edits')
     .addTag('Merchant portal', 'Wallet, payouts, beneficiaries, webhooks')
     .addTag('Merchant — BBPS', 'Bill payments (mock)')
     .addTag('Ops — Dashboard', 'Admin analytics')
@@ -59,6 +65,7 @@ export function setupSwagger(app: INestApplication): void {
     extraModels: [
       BeneficiaryDto,
       PublicOnboardingDto,
+      UpdatePendingOnboardingDto,
       MerchantPayoutDto,
       SetMpinDto,
       ResetMpinDto,

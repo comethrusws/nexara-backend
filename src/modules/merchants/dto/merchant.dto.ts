@@ -163,34 +163,6 @@ export class SuspendMerchantDto {
   reason?: string;
 }
 
-/**
- * Self-service provisioning by a distributor-tier user for their own
- * downline. The backend pins the parent to the caller's subtree and
- * enforces hierarchy rules — callers can never escalate or poach.
- */
-export class ProvisionDownlineDto {
-  @IsString()
-  @Matches(MOBILE, { message: 'mobile must be 10 digits' })
-  mobile: string;
-
-  @IsIn(['DISTRIBUTOR', 'RETAILER', 'MERCHANT'], {
-    message: 'entityType must be DISTRIBUTOR or RETAILER',
-  })
-  entityType: string;
-
-  @IsOptional()
-  @IsUUID()
-  parentOrganizationId?: string;
-
-  @IsOptional()
-  @IsString()
-  businessName?: string;
-
-  @IsOptional()
-  @IsString()
-  contactPerson?: string;
-}
-
 export class RejectKycDto {
   @IsOptional()
   @IsString()
@@ -308,6 +280,26 @@ export class VerifyPanDto {
 
 export class UpdateMerchantDto {
   @IsOptional()
+  @IsString()
+  businessName?: string;
+
+  @IsOptional()
+  @IsString()
+  contactPerson?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @IsOptional()
   @IsEnum(MerchantStatus)
   status?: MerchantStatus;
 
@@ -403,4 +395,81 @@ export class OnboardingExtrasDto {
   @Type(() => Boolean)
   @IsBoolean()
   agreementAccepted?: boolean;
+}
+
+/** Partner (SD/Dist) provision of a child mobile under their network. */
+export class ProvisionDownlineDto {
+  @ApiProperty({ example: '9876543210' })
+  @IsString()
+  @Matches(MOBILE, { message: 'mobile must be 10 digits' })
+  mobile: string;
+
+  @ApiProperty({ enum: ['DISTRIBUTOR', 'RETAILER'] })
+  @IsIn(['DISTRIBUTOR', 'RETAILER'])
+  entityType: 'DISTRIBUTOR' | 'RETAILER';
+
+  @ApiPropertyOptional({
+    description: 'Parent org in caller network; defaults to caller org',
+  })
+  @IsOptional()
+  @IsUUID()
+  parentOrganizationId?: string;
+
+  @ApiPropertyOptional({ example: 'Sharma Distributors' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  businessName?: string;
+
+  @ApiPropertyOptional({ example: 'Rahul Sharma' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  contactPerson?: string;
+}
+
+export class UpdatePendingOnboardingDto {
+  @ApiPropertyOptional({ example: 'Sharma General Store' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  businessName?: string;
+
+  @ApiPropertyOptional({ example: 'Rahul Sharma' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  contactPerson?: string;
+
+  @ApiPropertyOptional({ example: 'rahul@example.com' })
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiPropertyOptional({ example: '12 MG Road, Pune' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  latitude?: string;
+
+  @IsOptional()
+  @IsString()
+  longitude?: string;
+
+  @IsOptional()
+  @IsString()
+  shopType?: string;
+
+  /** Optional data-URL or raw base64 selfie replacement */
+  @IsOptional()
+  @IsString()
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  selfieContentType?: string;
 }

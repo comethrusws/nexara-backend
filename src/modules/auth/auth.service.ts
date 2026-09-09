@@ -7,9 +7,12 @@ import { IsNull, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { User } from './entities/user.entity';
+import { UserRole } from './auth.constants';
 import { UsersService } from './users.service';
 import { Merchant } from '../merchants/entities/merchant.entity';
 import { MerchantStatus } from '../merchants/merchant.enums';
+import { Organization } from '../organizations/entities/organization.entity';
+import { OrganizationType } from '../organizations/organization.constants';
 
 export type OtpPurpose = 'LOGIN' | 'ONBOARDING';
 
@@ -23,6 +26,8 @@ export class AuthService {
     private readonly otps: Repository<OtpChallenge>,
     @InjectRepository(Merchant)
     private readonly merchants: Repository<Merchant>,
+    @InjectRepository(Organization)
+    private readonly orgs: Repository<Organization>,
   ) {}
 
   async login(email: string, password: string) {
@@ -42,7 +47,8 @@ export class AuthService {
         401,
       );
     }
-    return this.issue(user);
+    const syncedUser = await this.ensureUserRoleSynced(user);
+    return this.issue(syncedUser);
   }
 
   private normalizeMobile(mobile: string): string {
@@ -206,11 +212,41 @@ export class AuthService {
         401,
       );
     }
-    return this.issue(user);
+    const syncedUser = await this.ensureUserRoleSynced(user);
+    return this.issue(syncedUser);
   }
 
-  issueSessionForUser(user: User) {
-    return this.issue(user);
+  async issueSessionForUser(user: User) {
+    const syncedUser = await this.ensureUserRoleSynced(user);
+    return this.issue(syncedUser);
+  }
+
+  private async ensureUserRoleSynced(user: User): Promise<User> {
+    if (
+      user.organizationId &&
+      (user.role === UserRole.MERCHANT ||
+        user.role === UserRole.DISTRIBUTOR ||
+        user.role === UserRole.SUPER_DISTRIBUTOR)
+    ) {
+      try {
+        const org = await this.orgs.findOne({ where: { id: user.organizationId } });
+        if (org) {
+          let expectedRole: UserRole = UserRole.MERCHANT;
+          if (org.type === OrganizationType.SUPER_DISTRIBUTOR) {
+            expectedRole = UserRole.SUPER_DISTRIBUTOR;
+          } else if (org.type === OrganizationType.DISTRIBUTOR) {
+            expectedRole = UserRole.DISTRIBUTOR;
+          }
+          if (user.role !== expectedRole) {
+            user.role = expectedRole;
+            await this.users.saveUser(user);
+          }
+        }
+      } catch {
+        // ignore fallback
+      }
+    }
+    return user;
   }
 
   private issue(user: User) {

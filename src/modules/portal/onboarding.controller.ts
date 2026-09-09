@@ -41,7 +41,7 @@ export class OnboardingController {
     });
     if (errors.length > 0) {
       const message = errors
-        .flatMap((error) => Object.values(error.constraints ?? {}))
+        .flatMap((error: any) => Object.values(error.constraints ?? {}))
         .join('; ');
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
@@ -65,7 +65,7 @@ export class OnboardingController {
         500,
       );
     }
-    const session = this.auth.issueSessionForUser(user);
+    const session = await this.auth.issueSessionForUser(user);
     return { merchant, ...session };
   }
 

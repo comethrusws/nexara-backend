@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
@@ -8,14 +8,13 @@ import {
   StatementLine,
   WalletBalances,
 } from '../../integrations/fineract/fineract.types';
+import { MerchantsService } from '../merchants/merchants.service';
 import {
   FundingChannel,
   FundingStatus,
   WalletFunding,
 } from './entities/wallet-funding.entity';
 import { WalletMapping } from './entities/wallet-mapping.entity';
-import { Merchant } from '../merchants/entities/merchant.entity';
-import { MerchantStatus } from '../merchants/merchant.enums';
 
 export interface WalletView {
   merchantId: string;
@@ -32,10 +31,10 @@ export class WalletService {
     private readonly mappings: Repository<WalletMapping>,
     @InjectRepository(WalletFunding)
     private readonly fundings: Repository<WalletFunding>,
-    @InjectRepository(Merchant)
-    private readonly merchants: Repository<Merchant>,
     @Inject(FINERACT_PORT)
     private readonly fineract: FineractPort,
+    @Inject(forwardRef(() => MerchantsService))
+    private readonly merchants: MerchantsService,
   ) {}
 
   async openWallet(input: {
@@ -101,7 +100,7 @@ export class WalletService {
     merchantId: string,
     input: { amount: string; externalPaymentReference: string; notes?: string },
   ): Promise<WalletView> {
-    await this.requireActiveMerchant(merchantId);
+    await this.merchants.requireActive(merchantId);
     return this.fund({
       merchantId,
       amount: input.amount,
@@ -119,6 +118,8 @@ export class WalletService {
     notes?: string;
     paymentDate?: string;
   }) {
+    await this.merchants.requireActive(input.merchantId);
+
     if (input.channel !== FundingChannel.CASH) {
       const pending = await this.fundings.save(
         this.fundings.create({
@@ -200,36 +201,16 @@ export class WalletService {
     return mapping;
   }
 
-  /**
-   * Wallet presence for a batch of merchants — ONE query. Used by downline
-   * rendering; the per-row `getRequiredMapping` in a loop was N queries.
-   */
-  async hasMappings(merchantIds: string[]): Promise<Set<string>> {
-    const unique = [...new Set(merchantIds.filter(Boolean))];
-    if (unique.length === 0) {
+  /** Returns merchant IDs that already have a wallet mapping (no Fineract call). */
+  async findMappedMerchantIds(merchantIds: string[]): Promise<Set<string>> {
+    if (merchantIds.length === 0) {
       return new Set();
     }
     const rows = await this.mappings.find({
-      where: { merchantId: In(unique) },
+      where: { merchantId: In(merchantIds) },
       select: { merchantId: true },
     });
     return new Set(rows.map((row) => row.merchantId));
-  }
-
-  /**
-   * Wallet credits apply to ACTIVE merchants only. Read straight from the
-   * merchant row (no service dependency) to avoid a Merchants ↔ Wallet
-   * module cycle.
-   */
-  private async requireActiveMerchant(merchantId: string): Promise<void> {
-    const merchant = await this.merchants.findOne({ where: { id: merchantId } });
-    if (!merchant || merchant.status !== MerchantStatus.ACTIVE) {
-      throw new NexaraError(
-        ErrorCodes.MERCHANT_INACTIVE,
-        'Wallet credits apply to ACTIVE merchants only',
-        409,
-      );
-    }
   }
 
   private async toView(

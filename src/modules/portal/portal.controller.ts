@@ -43,7 +43,7 @@ import {
 } from './dto/portal.dto';
 
 @Controller('me')
-@Roles(UserRole.MERCHANT)
+@Roles(UserRole.MERCHANT, UserRole.DISTRIBUTOR, UserRole.SUPER_DISTRIBUTOR)
 @ApiTags('Merchant portal')
 @ApiBearerAuth('JWT')
 export class PortalController {

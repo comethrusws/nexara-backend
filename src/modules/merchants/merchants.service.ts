@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
@@ -12,7 +12,7 @@ import {
 } from '../../integrations/storage/storage.types';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
-import { UserRole } from '../auth/auth.constants';
+import { AuthUser, UserRole } from '../auth/auth.constants';
 import { FeeEngineService } from '../fee-engine/fee-engine.service';
 import { UsersService } from '../auth/users.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -24,8 +24,10 @@ import { OrganizationsService } from '../organizations/organizations.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
   CreateMerchantDto,
+  ProvisionDownlineDto,
   PublicOnboardingDto,
   UpdateMerchantDto,
+  UpdatePendingOnboardingDto,
 } from './dto/merchant.dto';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
@@ -43,6 +45,7 @@ export class MerchantsService implements OnModuleInit {
     @Inject(KYC_PORT) private readonly kyc: KycPort,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStoragePort,
     private readonly config: ConfigService,
+    @Inject(forwardRef(() => WalletService))
     private readonly wallets: WalletService,
     private readonly organizations: OrganizationsService,
     private readonly users: UsersService,
@@ -70,18 +73,126 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
-  async create(input: CreateMerchantDto) {
-    const admin = await this.organizations.ensureSeeded();
-    const duplicate = await this.merchants.findOne({
-      where: { mobile: input.mobile },
-    });
-    if (duplicate) {
+  /**
+   * Asserts that a Super Distributor or Distributor has completed KYC and is ACTIVE
+   * before allowing them to add, remove, or manage sub-entities.
+   * Admin and Ops bypass this check as platform bosses.
+   */
+  async assertKycDoneForManagement(caller?: AuthUser): Promise<void> {
+    if (!caller) return;
+    if (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) {
+      return;
+    }
+    if (
+      caller.role === UserRole.SUPER_DISTRIBUTOR ||
+      caller.role === UserRole.DISTRIBUTOR
+    ) {
+      if (!caller.merchantId) {
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'Your account does not have an associated merchant profile',
+          403,
+        );
+      }
+      const callerMerchant = await this.merchants.findOne({
+        where: { id: caller.merchantId },
+      });
+      if (!callerMerchant || callerMerchant.status !== MerchantStatus.ACTIVE) {
+        throw new NexaraError(
+          ErrorCodes.KYC_INCOMPLETE,
+          'Your account KYC verification must be approved and active before you can manage sub-entities',
+          403,
+        );
+      }
+      return;
+    }
+    throw new NexaraError(
+      ErrorCodes.FORBIDDEN,
+      'Only Super Distributors, Distributors, or Administrators can manage sub-entities',
+      403,
+    );
+  }
+
+  /**
+   * Asserts that target organization / merchant belongs to the caller's hierarchy.
+   * Admin and Ops bypass this check.
+   */
+  async assertEntityInHierarchy(
+    caller: AuthUser,
+    targetMerchant: Merchant,
+  ): Promise<void> {
+    if (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) {
+      return;
+    }
+    if (!caller.organizationId || !targetMerchant.organizationId) {
       throw new NexaraError(
-        ErrorCodes.DUPLICATE_REFERENCE,
-        `Mobile ${input.mobile} is already provisioned (status ${duplicate.status})`,
-        409,
+        ErrorCodes.FORBIDDEN,
+        'Target entity is not within your hierarchy',
+        403,
       );
     }
+    const isChild = await this.organizations.isDescendant(
+      caller.organizationId,
+      targetMerchant.organizationId,
+    );
+    if (!isChild) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Target entity is not within your hierarchy',
+        403,
+      );
+    }
+  }
+
+  async create(input: CreateMerchantDto, caller?: AuthUser) {
+    const admin = await this.organizations.ensureSeeded();
+
+    if (caller) {
+      await this.assertKycDoneForManagement(caller);
+
+      if (caller.role === UserRole.SUPER_DISTRIBUTOR) {
+        const requestedType = input.entityType?.toUpperCase();
+        if (requestedType === 'SUPER_DISTRIBUTOR') {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Super Distributors cannot create other Super Distributors',
+            403,
+          );
+        }
+        if (input.parentOrganizationId && input.parentOrganizationId.trim()) {
+          const targetParent = input.parentOrganizationId.trim();
+          const isValidParent =
+            targetParent === caller.organizationId ||
+            (await this.organizations.isDescendant(
+              caller.organizationId!,
+              targetParent,
+            ));
+          if (!isValidParent) {
+            throw new NexaraError(
+              ErrorCodes.FORBIDDEN,
+              'Parent organization must be within your hierarchy',
+              403,
+            );
+          }
+        } else {
+          input.parentOrganizationId = caller.organizationId!;
+        }
+      } else if (caller.role === UserRole.DISTRIBUTOR) {
+        const requestedType = input.entityType?.toUpperCase();
+        if (
+          requestedType === 'DISTRIBUTOR' ||
+          requestedType === 'SUPER_DISTRIBUTOR'
+        ) {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Distributors can only create Retailers / Merchants',
+            403,
+          );
+        }
+        input.parentOrganizationId = caller.organizationId!;
+      }
+    }
+
     const parentId =
       input.parentOrganizationId && input.parentOrganizationId.trim()
         ? input.parentOrganizationId
@@ -170,25 +281,43 @@ export class MerchantsService implements OnModuleInit {
       });
     }
     await this.audit.record({
-      actorEmail: 'system',
-      actorRole: 'ADMIN',
+      actorEmail: caller?.email ?? 'system',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_CREATED',
       merchantId: saved.id,
-      details: `Created merchant ${saved.businessName}`,
+      details: `Created merchant ${saved.businessName}${caller ? ` under ${caller.role}` : ''}`,
     });
     return this.toView(saved);
   }
 
-  async get(id: string) {
-    return this.toView(await this.requireMerchant(id));
+  async get(id: string, caller?: AuthUser) {
+    const merchant = await this.requireMerchant(id);
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      if (merchant.id !== caller.merchantId) {
+        await this.assertEntityInHierarchy(caller, merchant);
+      }
+    } else if (caller && caller.role === UserRole.MERCHANT) {
+      if (merchant.id !== caller.merchantId) {
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'You do not have access to this merchant profile',
+          403,
+        );
+      }
+    }
+    return this.toView(merchant);
   }
 
   async findByOrganizationId(organizationId: string): Promise<Merchant | null> {
     return this.merchants.findOne({ where: { organizationId } });
   }
 
-  async list(filters?: { status?: string; search?: string }) {
-    const filtered = await this.findFilteredMerchants(filters);
+  async list(filters?: { status?: string; search?: string }, caller?: AuthUser) {
+    const filtered = await this.findFilteredMerchants(filters, caller);
     if (filtered.length === 0) {
       return [];
     }
@@ -215,8 +344,134 @@ export class MerchantsService implements OnModuleInit {
     );
   }
 
-  async listKycVerifications(filters?: { status?: string; search?: string }) {
-    const filtered = await this.findFilteredMerchants(filters);
+  /**
+   * Flat downline for Super Distributor / Distributor portals.
+   * Scoped to descendant orgs only (excludes the caller's own merchant).
+   */
+  async listDownline(caller: AuthUser) {
+    if (
+      caller.role !== UserRole.SUPER_DISTRIBUTOR &&
+      caller.role !== UserRole.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only Super Distributors and Distributors can view a downline network',
+        403,
+      );
+    }
+    if (!caller.organizationId) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Your account does not have an associated organization',
+        403,
+      );
+    }
+
+    const descendantOrgIds = await this.organizations.getDescendantOrgIds(
+      caller.organizationId,
+    );
+    if (descendantOrgIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.merchants.find({
+      where: { organizationId: In(descendantOrgIds) },
+      relations: { kyc: true },
+      order: { createdAt: 'DESC' },
+    });
+
+    // Batched: org types for exactly these rows (1 lightweight query, no
+    // entitlement views) + wallet presence (1 query).
+    const orgIds = [
+      ...new Set(
+        rows
+          .map((row) => row.organizationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const orgs = await this.organizations.rawByIds(orgIds);
+    const orgById = new Map(orgs.map((org) => [org.id, org]));
+    const walletIds = await this.wallets.findMappedMerchantIds(
+      rows.map((row) => row.id),
+    );
+
+    return rows.map((merchant) => {
+      const org = merchant.organizationId
+        ? orgById.get(merchant.organizationId)
+        : undefined;
+      const entityType =
+        org?.type === OrganizationType.MERCHANT || !org?.type
+          ? 'RETAILER'
+          : org.type;
+      return {
+        id: merchant.id,
+        businessName: merchant.businessName,
+        contactPerson: merchant.contactPerson,
+        mobile: merchant.mobile,
+        email: merchant.email,
+        status: merchant.status,
+        displayStatus: this.resolveKycDisplayStatus(merchant),
+        entityType,
+        organizationId: merchant.organizationId,
+        createdAt: merchant.createdAt,
+        hasWallet: walletIds.has(merchant.id),
+      };
+    });
+  }
+
+  /**
+   * Partner self-service provision of a child mobile (SD → Dist/Retailer, Dist → Retailer).
+   */
+  async provisionDownline(caller: AuthUser, input: ProvisionDownlineDto) {
+    if (
+      caller.role !== UserRole.SUPER_DISTRIBUTOR &&
+      caller.role !== UserRole.DISTRIBUTOR
+    ) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only Super Distributors and Distributors can provision downline entities',
+        403,
+      );
+    }
+
+    const mobile = input.mobile.replace(/\D/g, '').slice(-10);
+    if (!/^\d{10}$/.test(mobile)) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'mobile must be 10 digits',
+        400,
+      );
+    }
+
+    const existing = await this.merchants.findOne({
+      where: { mobile },
+      order: { createdAt: 'DESC' },
+    });
+    if (existing) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already provisioned',
+        409,
+      );
+    }
+
+    return this.create(
+      {
+        mobile,
+        entityType: input.entityType,
+        parentOrganizationId: input.parentOrganizationId,
+        businessName: input.businessName,
+        contactPerson: input.contactPerson,
+      },
+      caller,
+    );
+  }
+
+  async listKycVerifications(
+    filters?: { status?: string; search?: string },
+    caller?: AuthUser,
+  ) {
+    const filtered = await this.findFilteredMerchants(filters, caller);
     return filtered.map((row) => this.toKycVerificationListItem(row));
   }
 
@@ -256,8 +511,8 @@ export class MerchantsService implements OnModuleInit {
     };
   }
 
-  async approveKyc(id: string, actorEmail = 'ops') {
-    return this.activate(id, actorEmail);
+  async approveKyc(id: string) {
+    return this.activate(id);
   }
 
   async rejectKyc(id: string, reason?: string, actorEmail = 'ops') {
@@ -292,145 +547,6 @@ export class MerchantsService implements OnModuleInit {
       type: 'MERCHANT_KYC_REJECTED',
     });
     return this.toView(merchant);
-  }
-
-  /**
-   * Downline network for a distributor-tier user: every merchant below
-   * their own organization, with activation status and wallet presence.
-   * Read-only — no KYC or activation powers leak through this view.
-   */
-  async getDownline(actorMerchantId: string) {
-    const actor = await this.requireMerchant(actorMerchantId);
-    const actorOrgId = this.requireOrganizationId(actor);
-    const descendantOrgIds = await this.organizations.descendantIds(actorOrgId);
-    if (descendantOrgIds.length === 0) {
-      return [];
-    }
-    const rows = await this.merchants.find({
-      where: { organizationId: In(descendantOrgIds) },
-      relations: { kyc: true },
-      order: { createdAt: 'DESC' },
-    });
-    // Batched: org types for exactly these rows (1 query) + wallet presence
-    // for all rows (1 query). The old path ran a full heavyweight org scan
-    // plus one wallet lookup per downline member.
-    const orgIds = [
-      ...new Set(
-        rows
-          .map((row) => row.organizationId)
-          .filter((id): id is string => Boolean(id)),
-      ),
-    ];
-    const [orgRows, walletHolders] = await Promise.all([
-      this.organizations.rawByIds(orgIds),
-      this.wallets.hasMappings(rows.map((row) => row.id)),
-    ]);
-    const typeByOrgId = new Map(orgRows.map((org) => [org.id, org.type]));
-    return rows.map((row) => {
-      const orgType = typeByOrgId.get(row.organizationId ?? '');
-      return {
-        id: row.id,
-        businessName: row.businessName,
-        contactPerson: row.contactPerson,
-        mobile: row.mobile,
-        email: row.email,
-        status: row.status,
-        displayStatus: this.resolveKycDisplayStatus(row),
-        entityType:
-          orgType === OrganizationType.SUPER_DISTRIBUTOR ||
-          orgType === OrganizationType.DISTRIBUTOR
-            ? orgType
-            : 'RETAILER',
-        organizationId: row.organizationId,
-        createdAt: row.createdAt,
-        hasWallet: walletHolders.has(row.id),
-      };
-    });
-  }
-
-  /**
-   * Provision a mobile number inside the caller's own downline.
-   * Hierarchy enforced: SUPER_DISTRIBUTOR may parent DISTRIBUTOR/MERCHANT,
-   * DISTRIBUTOR may parent MERCHANT only, retailers may not provision.
-   * Created records are plain CREATED merchants — approval stays ADMIN-only.
-   */
-  async provisionDownline(
-    actorMerchantId: string,
-    input: {
-      mobile: string;
-      entityType: string;
-      parentOrganizationId?: string;
-      businessName?: string;
-      contactPerson?: string;
-    },
-    actorEmail = 'downline',
-  ) {
-    const actor = await this.requireMerchant(actorMerchantId);
-    const actorOrgId = this.requireOrganizationId(actor);
-    const actorOrg = await this.organizations.requireOrg(actorOrgId);
-    if (
-      actorOrg.type !== OrganizationType.SUPER_DISTRIBUTOR &&
-      actorOrg.type !== OrganizationType.DISTRIBUTOR
-    ) {
-      throw new NexaraError(
-        ErrorCodes.FORBIDDEN,
-        'Only distributors can provision downline numbers',
-        403,
-      );
-    }
-    const subtree = new Set([
-      actorOrgId,
-      ...(await this.organizations.descendantIds(actorOrgId)),
-    ]);
-    const parentId =
-      input.parentOrganizationId && input.parentOrganizationId.trim()
-        ? input.parentOrganizationId.trim()
-        : actorOrgId;
-    if (!subtree.has(parentId)) {
-      throw new NexaraError(
-        ErrorCodes.FORBIDDEN,
-        'Parent entity is outside your network',
-        403,
-      );
-    }
-    const parentOrg = await this.organizations.requireOrg(parentId);
-    const childType =
-      input.entityType === 'DISTRIBUTOR' ? 'DISTRIBUTOR' : 'RETAILER';
-    if (
-      parentOrg.type === OrganizationType.DISTRIBUTOR &&
-      childType !== 'RETAILER'
-    ) {
-      throw new NexaraError(
-        ErrorCodes.INVALID_HIERARCHY,
-        'Distributors can only provision retailers',
-        409,
-      );
-    }
-    if (
-      parentOrg.type !== OrganizationType.SUPER_DISTRIBUTOR &&
-      parentOrg.type !== OrganizationType.DISTRIBUTOR
-    ) {
-      throw new NexaraError(
-        ErrorCodes.INVALID_HIERARCHY,
-        'New entities must hang under a distributor in your network',
-        409,
-      );
-    }
-    const created = await this.create({
-      mobile: input.mobile,
-      entityType: childType,
-      parentOrganizationId: parentId,
-      businessName: input.businessName,
-      contactPerson: input.contactPerson,
-    });
-    await this.audit.record({
-      actorEmail,
-      actorRole: 'MERCHANT',
-      action: 'DOWNLINE_PROVISIONED',
-      merchantId: created.id,
-      details: `${actor.businessName} provisioned ${created.mobile} as ${childType}`,
-    });
-    return created;
   }
 
   private resolveKycDisplayStatus(
@@ -503,19 +619,106 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
-  async update(id: string, input: UpdateMerchantDto, actorEmail = 'ops') {
+  async update(
+    id: string,
+    input: UpdateMerchantDto,
+    actorEmail = 'ops',
+    caller?: AuthUser,
+  ) {
     const merchant = await this.requireMerchant(id);
-    const previous = { status: merchant.status, tier: merchant.tier };
-    if (input.status && input.status !== merchant.status) {
-      if (input.status === MerchantStatus.ACTIVE) {
-        // Never allow status to be forced to ACTIVE around the approval
-        // path: same onboarding gates, wallet provisioning, and
-        // notification as approveKyc -> activate.
-        await this.activate(id, actorEmail);
-        merchant.status = MerchantStatus.ACTIVE;
-      } else {
-        merchant.status = input.status;
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+
+      if (
+        input.parentOrganizationId &&
+        merchant.organizationId &&
+        input.parentOrganizationId !== merchant.organizationId
+      ) {
+        const isAllowed = await this.organizations.isDescendant(
+          caller.organizationId!,
+          input.parentOrganizationId,
+        );
+        if (!isAllowed) {
+          throw new NexaraError(
+            ErrorCodes.FORBIDDEN,
+            'Cannot reassign entity to an organization outside your hierarchy',
+            403,
+          );
+        }
+        await this.organizations.reassignParent(
+          merchant.organizationId,
+          input.parentOrganizationId,
+        );
       }
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (input.parentOrganizationId && merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        if (currentOrg.parentId !== input.parentOrganizationId) {
+          await this.organizations.reassignParent(
+            merchant.organizationId,
+            input.parentOrganizationId,
+          );
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_HIERARCHY',
+            merchantId: merchant.id,
+            details: `Admin reassigned entity parent from ${currentOrg.parentId} to ${input.parentOrganizationId}`,
+            previousValue: currentOrg.parentId,
+            newValue: input.parentOrganizationId,
+          });
+        }
+      }
+
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE',
+            merchantId: merchant.id,
+            details: `Admin overruled settings for entity ${merchant.businessName} under downline ${currentOrg.parentId}`,
+          });
+        }
+      }
+    }
+
+    const previous = { status: merchant.status, tier: merchant.tier };
+    if (input.businessName) {
+      merchant.businessName = input.businessName;
+    }
+    if (input.contactPerson) {
+      merchant.contactPerson = input.contactPerson;
+    }
+    if (input.email !== undefined) {
+      merchant.email = input.email;
+    }
+    if (input.address) {
+      merchant.address = input.address;
+    }
+    if (
+      merchant.organizationId &&
+      (input.businessName || input.contactPerson || input.email)
+    ) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        name: input.businessName,
+        contactPerson: input.contactPerson,
+        email: input.email,
+      });
+    }
+    if (input.status && input.status !== merchant.status) {
+      merchant.status = input.status;
     }
     if (input.dailyPayoutLimit) {
       merchant.dailyPayoutLimit = input.dailyPayoutLimit;
@@ -566,7 +769,7 @@ export class MerchantsService implements OnModuleInit {
     await this.merchants.save(merchant);
     await this.audit.record({
       actorEmail,
-      actorRole: 'ADMIN',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_UPDATED',
       merchantId: merchant.id,
       details: input.reason ?? 'Merchant record updated',
@@ -580,7 +783,7 @@ export class MerchantsService implements OnModuleInit {
     validateFeeSlabsJson(feeSlabsJson);
   }
 
-  async network() {
+  async network(caller?: AuthUser) {
     const orgs = await this.organizations.list();
     const merchants = await this.merchants.find();
     const byParent = new Map<string | null, typeof orgs>();
@@ -610,6 +813,17 @@ export class MerchantsService implements OnModuleInit {
         children: await Promise.all(children.map((child) => attach(child))),
       };
     };
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR) &&
+      caller.organizationId
+    ) {
+      const userRoots = orgs.filter((org) => org.id === caller.organizationId);
+      return Promise.all(userRoots.map((root) => attach(root)));
+    }
+
     const roots = orgs.filter((org) => !org.parentId);
     return Promise.all(roots.map((root) => attach(root)));
   }
@@ -663,8 +877,35 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async activate(id: string, actorEmail = 'ops') {
+  async activate(id: string, caller?: AuthUser) {
     const merchant = await this.requireMerchant(id);
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail: caller.email ?? 'admin',
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_ACTIVATE',
+            merchantId: merchant.id,
+            details: `Admin overruled and activated entity ${merchant.businessName}`,
+          });
+        }
+      }
+    }
+
     if (merchant.status === MerchantStatus.ACTIVE) {
       return this.toView(merchant);
     }
@@ -729,24 +970,13 @@ export class MerchantsService implements OnModuleInit {
     const organizationId = this.requireOrganizationId(merchant);
     await this.organizations.assertAncestorsActive(organizationId);
     await this.organizations.assertFeature(organizationId, Features.WALLET);
-    // Wallet BEFORE status flip: a merchant can never be ACTIVE without a
-    // provisioned Fineract wallet. openWallet is idempotent, so retries and
-    // double-submits reuse the existing Fineract account instead of
-    // creating duplicates.
-    const wallet = await this.wallets.openWallet({
+    await this.wallets.openWallet({
       merchantId: merchant.id,
       businessName: merchant.businessName,
       mobileNo: merchant.mobile,
     });
     merchant.status = MerchantStatus.ACTIVE;
     await this.merchants.save(merchant);
-    await this.audit.record({
-      actorEmail,
-      actorRole: 'ADMIN',
-      action: 'MERCHANT_ACTIVATED',
-      merchantId: merchant.id,
-      details: `Merchant activated with Fineract wallet (client ${wallet.fineractClientId}, savings ${wallet.fineractSavingsAccountId})`,
-    });
     await this.notifications.notifyUser({
       merchantId: merchant.id,
       organizationId: merchant.organizationId,
@@ -758,8 +988,40 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
-  async suspend(id: string, reason?: string, actorEmail = 'ops') {
+  async suspend(
+    id: string,
+    reason?: string,
+    actorEmail = 'ops',
+    caller?: AuthUser,
+  ) {
     const merchant = await this.requireMerchant(id);
+
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    } else if (
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS)
+    ) {
+      if (merchant.organizationId) {
+        const currentOrg = await this.organizations.get(merchant.organizationId);
+        const adminOrg = await this.organizations.ensureSeeded();
+        if (currentOrg.parentId && currentOrg.parentId !== adminOrg.id) {
+          await this.audit.record({
+            actorEmail,
+            actorRole: 'ADMIN',
+            action: 'ADMIN_OVERRULE_SUSPEND',
+            merchantId: merchant.id,
+            details: `Admin overruled and suspended entity ${merchant.businessName}`,
+          });
+        }
+      }
+    }
+
     if (merchant.status !== MerchantStatus.ACTIVE) {
       throw new NexaraError(
         ErrorCodes.MERCHANT_INACTIVE,
@@ -771,12 +1033,60 @@ export class MerchantsService implements OnModuleInit {
     await this.merchants.save(merchant);
     await this.audit.record({
       actorEmail,
-      actorRole: 'ADMIN',
+      actorRole: caller?.role ?? 'ADMIN',
       action: 'MERCHANT_SUSPENDED',
       merchantId: merchant.id,
       details: reason ?? 'Merchant suspended',
     });
     return this.toView(merchant);
+  }
+
+  async deleteMerchant(id: string, actorEmail: string, caller?: AuthUser) {
+    const merchant = await this.requireMerchant(id);
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      await this.assertKycDoneForManagement(caller);
+      await this.assertEntityInHierarchy(caller, merchant);
+    }
+
+    if (merchant.organizationId) {
+      const children = await this.organizations.children(
+        merchant.organizationId,
+      );
+      if (children && children.length > 0) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_HIERARCHY,
+          'Cannot remove entity that still has sub-distributors or retailers. Reassign or remove them first.',
+          409,
+        );
+      }
+    }
+
+    merchant.status = MerchantStatus.SUSPENDED;
+    if (!merchant.businessName.startsWith('[REMOVED]')) {
+      merchant.businessName = `[REMOVED] ${merchant.businessName}`;
+    }
+    await this.merchants.save(merchant);
+
+    const isOverrule =
+      caller &&
+      (caller.role === UserRole.ADMIN || caller.role === UserRole.OPS) &&
+      merchant.organizationId &&
+      (await this.organizations.get(merchant.organizationId)).parentId !==
+        (await this.organizations.ensureSeeded()).id;
+
+    await this.audit.record({
+      actorEmail,
+      actorRole: caller?.role ?? 'ADMIN',
+      action: isOverrule ? 'ADMIN_OVERRULE_REMOVE' : 'ENTITY_REMOVED',
+      merchantId: merchant.id,
+      details: `Entity removed from active network by ${caller?.role ?? 'ADMIN'} (${actorEmail})`,
+    });
+
+    return { success: true, removed: true };
   }
 
   async getKycPresignedUrls(id: string) {
@@ -921,7 +1231,7 @@ export class MerchantsService implements OnModuleInit {
     if (merchant.status !== MerchantStatus.ACTIVE) {
       throw new NexaraError(
         ErrorCodes.MERCHANT_INACTIVE,
-        'Only ACTIVE merchants may initiate payouts',
+        'Only ACTIVE merchants may use wallet funding and payouts',
         409,
       );
     }
@@ -939,7 +1249,11 @@ export class MerchantsService implements OnModuleInit {
     const existingUser = await this.users.findByMobile(mobile);
 
     if (existingUser) {
-      if (existingUser.role !== UserRole.MERCHANT || !existingUser.merchantId) {
+      const isEntityRole =
+        existingUser.role === UserRole.MERCHANT ||
+        existingUser.role === UserRole.DISTRIBUTOR ||
+        existingUser.role === UserRole.SUPER_DISTRIBUTOR;
+      if (!isEntityRole || !existingUser.merchantId) {
         throw new NexaraError(
           ErrorCodes.INVALID_REQUEST,
           'This mobile number is already linked to another account',
@@ -1037,6 +1351,19 @@ export class MerchantsService implements OnModuleInit {
         name: input.businessName,
       });
     }
+    let entityUserRole: UserRole = UserRole.MERCHANT;
+    if (merchant.organizationId) {
+      try {
+        const org = await this.organizations.get(merchant.organizationId);
+        if (org?.type === OrganizationType.SUPER_DISTRIBUTOR) {
+          entityUserRole = UserRole.SUPER_DISTRIBUTOR;
+        } else if (org?.type === OrganizationType.DISTRIBUTOR) {
+          entityUserRole = UserRole.DISTRIBUTOR;
+        }
+      } catch {
+        // fallback to MERCHANT
+      }
+    }
     await this.users.createMerchantUser({
       email,
       name: input.contactPerson,
@@ -1045,6 +1372,7 @@ export class MerchantsService implements OnModuleInit {
       organizationId: merchant.organizationId,
       password: input.password,
       mpin: input.mpin,
+      role: entityUserRole,
     });
     return this.finalizeSelfServeOnboarding(merchant.id, input);
   }
@@ -1205,6 +1533,141 @@ export class MerchantsService implements OnModuleInit {
     return this.toView(merchant);
   }
 
+  /**
+   * Merchant self-serve correction of a pending KYC submission.
+   * Mobile / PAN / Aadhaar stay locked; profile + location + selfie may change.
+   */
+  async updatePendingOnboarding(
+    merchantId: string,
+    userId: string,
+    input: UpdatePendingOnboardingDto,
+    actorEmail: string,
+  ) {
+    const hasUpdate =
+      input.businessName !== undefined ||
+      input.contactPerson !== undefined ||
+      input.email !== undefined ||
+      input.address !== undefined ||
+      input.latitude !== undefined ||
+      input.longitude !== undefined ||
+      input.shopType !== undefined ||
+      input.selfieBase64 !== undefined;
+    if (!hasUpdate) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Provide at least one field to update',
+        400,
+      );
+    }
+
+    const merchant = await this.requireMerchant(merchantId);
+    if (
+      merchant.status !== MerchantStatus.CREATED &&
+      merchant.status !== MerchantStatus.KYC_PENDING
+    ) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Onboarding can only be edited while KYC is pending review',
+        409,
+      );
+    }
+
+    const previous = {
+      businessName: merchant.businessName,
+      contactPerson: merchant.contactPerson,
+      email: merchant.email,
+      address: merchant.address,
+      shopType: merchant.kyc?.shopType ?? null,
+      latitude: merchant.kyc?.latitude ?? null,
+      longitude: merchant.kyc?.longitude ?? null,
+      hasSelfie: Boolean(merchant.kyc?.selfiePath),
+    };
+
+    if (input.businessName !== undefined) {
+      merchant.businessName = input.businessName.trim();
+    }
+    if (input.contactPerson !== undefined) {
+      merchant.contactPerson = input.contactPerson.trim();
+    }
+    if (input.email !== undefined) {
+      merchant.email = input.email.toLowerCase().trim();
+    }
+    if (input.address !== undefined) {
+      merchant.address = input.address.trim();
+    }
+    await this.merchants.save(merchant);
+
+    if (merchant.organizationId) {
+      await this.organizations.updateContactDetails(merchant.organizationId, {
+        email: merchant.email ?? undefined,
+        contactPerson: merchant.contactPerson,
+        name: merchant.businessName,
+      });
+    }
+
+    await this.users.updateMerchantProfile(userId, {
+      email: input.email !== undefined ? merchant.email ?? undefined : undefined,
+      name:
+        input.contactPerson !== undefined
+          ? merchant.contactPerson
+          : undefined,
+    });
+
+    if (input.latitude !== undefined) {
+      merchant.kyc.latitude = input.latitude;
+    }
+    if (input.longitude !== undefined) {
+      merchant.kyc.longitude = input.longitude;
+    }
+    if (input.shopType !== undefined) {
+      merchant.kyc.shopType = input.shopType;
+    }
+
+    if (this.looksLikeImagePayload(input.selfieBase64)) {
+      const decoded = this.decodeBase64Image(
+        input.selfieBase64!,
+        input.selfieContentType,
+      );
+      const stored = await this.storage.putObject({
+        key: `kyc/${merchant.id}/selfie${decoded.extension}`,
+        body: decoded.buffer,
+        contentType: decoded.contentType,
+      });
+      merchant.kyc.selfiePath = stored.url;
+    } else if (input.selfieBase64 !== undefined) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'selfieBase64 must be a valid image data-URL or base64 payload',
+        400,
+      );
+    }
+
+    await this.kycRecords.save(merchant.kyc);
+    merchant.status = MerchantStatus.KYC_PENDING;
+    await this.merchants.save(merchant);
+
+    await this.audit.record({
+      actorEmail,
+      actorRole: 'MERCHANT',
+      action: 'MERCHANT_ONBOARDING_UPDATED',
+      merchantId: merchant.id,
+      details: 'Merchant updated pending KYC submission',
+      previousValue: previous,
+      newValue: {
+        businessName: merchant.businessName,
+        contactPerson: merchant.contactPerson,
+        email: merchant.email,
+        address: merchant.address,
+        shopType: merchant.kyc.shopType,
+        latitude: merchant.kyc.latitude,
+        longitude: merchant.kyc.longitude,
+        hasSelfie: Boolean(merchant.kyc.selfiePath),
+      },
+    });
+
+    return this.toView(merchant);
+  }
+
   private async refreshDocumentMatch(merchant: Merchant): Promise<void> {
     const mismatchName = (path: string | null) =>
       (path ?? '').toLowerCase().includes('mismatch');
@@ -1291,11 +1754,40 @@ export class MerchantsService implements OnModuleInit {
     return merchant.organizationId;
   }
 
-  private async findFilteredMerchants(filters?: {
-    status?: string;
-    search?: string;
-  }): Promise<Merchant[]> {
+  private async findFilteredMerchants(
+    filters?: {
+      status?: string;
+      search?: string;
+    },
+    caller?: AuthUser,
+  ): Promise<Merchant[]> {
+    let allowedOrgIds: string[] | null = null;
+    if (
+      caller &&
+      (caller.role === UserRole.SUPER_DISTRIBUTOR ||
+        caller.role === UserRole.DISTRIBUTOR)
+    ) {
+      if (!caller.organizationId) {
+        return [];
+      }
+      const descendants = await this.organizations.getDescendantOrgIds(
+        caller.organizationId,
+      );
+      allowedOrgIds = [caller.organizationId, ...descendants];
+    } else if (caller && caller.role === UserRole.MERCHANT) {
+      allowedOrgIds = caller.organizationId ? [caller.organizationId] : [];
+    }
+
+    const where: any = {};
+    if (allowedOrgIds !== null) {
+      if (allowedOrgIds.length === 0) {
+        return [];
+      }
+      where.organizationId = In(allowedOrgIds);
+    }
+
     const rows = await this.merchants.find({
+      where,
       relations: { kyc: true },
       order: { createdAt: 'DESC' },
     });
@@ -1409,9 +1901,7 @@ export class MerchantsService implements OnModuleInit {
    */
   private toListView(
     merchant: Merchant,
-    org:
-      | { id: string; type: string; parentId: string | null }
-      | undefined,
+    org: { id: string; type: string; parentId: string | null } | undefined,
     dailySpent: string,
   ) {
     return this.buildView(
@@ -1423,7 +1913,11 @@ export class MerchantsService implements OnModuleInit {
 
   private buildView(
     merchant: Merchant,
-    entitlements: { id?: string; type?: string; parentId?: string | null } | null,
+    entitlements: {
+      id?: string;
+      type?: string;
+      parentId?: string | null;
+    } | null,
     dailySpent: string,
   ) {
     const entityType =
@@ -1446,10 +1940,7 @@ export class MerchantsService implements OnModuleInit {
       email: merchant.email,
       address: merchant.address,
       status: merchant.status,
-      displayStatus:
-        merchant.status === MerchantStatus.KYC_PENDING
-          ? 'PENDING_KYC'
-          : merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       entityType,
       parentId: entitlements?.parentId ?? null,
       dailyPayoutLimit: merchant.dailyPayoutLimit,

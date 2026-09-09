@@ -30,7 +30,7 @@ export class User {
   @Column({ name: 'mobile', type: 'varchar', length: 15, nullable: true })
   mobile: string | null;
 
-  @Column({ name: 'role', type: 'varchar', length: 16 })
+  @Column({ name: 'role', type: 'varchar', length: 32, default: UserRole.MERCHANT })
   role: UserRole;
 
   @Column({ name: 'merchant_id', type: 'uuid', nullable: true })

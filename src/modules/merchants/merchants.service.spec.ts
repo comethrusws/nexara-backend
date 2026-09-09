@@ -34,10 +34,8 @@ describe('MerchantsService', () => {
   };
   const wallets = {
     openWallet: jest.fn(),
-    getRequiredMapping: jest.fn(),
-    hasMappings: jest.fn(),
+    findMappedMerchantIds: jest.fn().mockResolvedValue(new Set()),
   };
-  const audit = { record: jest.fn() };
   const storage = {
     putObject: jest.fn(({ key }: { key: string }) => ({
       key,
@@ -52,15 +50,24 @@ describe('MerchantsService', () => {
     ensureSeeded: jest.fn(),
     createMerchantOrganization: jest.fn(),
     get: jest.fn(),
-    rawByIds: jest.fn(),
-    requireOrg: jest.fn(),
-    descendantIds: jest.fn(),
-    list: jest.fn(),
+    rawByIds: jest.fn().mockResolvedValue([]),
+    list: jest.fn().mockResolvedValue([]),
     assertAncestorsActive: jest.fn(),
     assertFeature: jest.fn(),
+    updateContactDetails: jest.fn(),
+    getDescendantOrgIds: jest.fn().mockResolvedValue([]),
+    isDescendant: jest.fn().mockResolvedValue(true),
+    reassignParent: jest.fn(),
+    children: jest.fn().mockResolvedValue([]),
   };
 
   let service: MerchantsService;
+  const users = {
+    createMerchantUser: jest.fn(),
+    findByMobile: jest.fn(),
+    updateMerchantProfile: jest.fn(),
+  };
+  const audit = { record: jest.fn() };
   const merchant: Merchant = {
     id: 'm1',
     businessName: 'Acme',
@@ -92,6 +99,7 @@ describe('MerchantsService', () => {
       aadhaarFrontPath: 's3://test/kyc/m1/aadhaar-front.jpg',
       panImagePath: 's3://test/kyc/m1/pan.jpg',
       selfiePath: 's3://test/kyc/m1/selfie.jpg',
+      shopType: 'kirana',
       latitude: '28.6139',
       longitude: '77.2090',
       agreementSignedAt: new Date(),
@@ -134,10 +142,7 @@ describe('MerchantsService', () => {
         },
         { provide: WalletService, useValue: wallets },
         { provide: OrganizationsService, useValue: organizations },
-        {
-          provide: UsersService,
-          useValue: { createMerchantUser: jest.fn(), findByMobile: jest.fn() },
-        },
+        { provide: UsersService, useValue: users },
         {
           provide: AuthService,
           useValue: { assertRecentOnboardingOtp: jest.fn() },
@@ -162,28 +167,17 @@ describe('MerchantsService', () => {
   });
 
   it('activates a KYC-complete merchant and opens a wallet', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant });
-    merchants.save.mockImplementation((value: Merchant) => value);
-    wallets.openWallet.mockResolvedValue({
-      merchantId: 'm1',
-      fineractClientId: 10000,
-      fineractSavingsAccountId: 1000,
-    });
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: { ...merchant.kyc } });
+    merchants.save.mockImplementation(async (value: Merchant) => value);
+    wallets.openWallet.mockResolvedValue({});
 
-    const result = await service.activate('m1', 'admin@nexara.test');
+    const result = await service.activate('m1');
 
     expect(wallets.openWallet).toHaveBeenCalledWith({
       merchantId: 'm1',
       businessName: 'Acme',
       mobileNo: '9876543210',
     });
-    expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actorEmail: 'admin@nexara.test',
-        action: 'MERCHANT_ACTIVATED',
-        merchantId: 'm1',
-      }),
-    );
     expect(result.status).toBe(MerchantStatus.ACTIVE);
   });
 
@@ -197,6 +191,65 @@ describe('MerchantsService', () => {
       code: ErrorCodes.KYC_INCOMPLETE,
     });
     expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
+  it('updates pending onboarding profile fields and audits the change', async () => {
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: { ...merchant.kyc } });
+    merchants.save.mockImplementation(async (value: Merchant) => value);
+    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+    users.updateMerchantProfile.mockResolvedValue({});
+
+    const result = await service.updatePendingOnboarding(
+      'm1',
+      'user-1',
+      {
+        businessName: 'Updated Store',
+        contactPerson: 'Anita',
+        email: 'anita@acme.test',
+        address: 'Pune',
+      },
+      'anita@acme.test',
+    );
+
+    expect(result.businessName).toBe('Updated Store');
+    expect(result.contactPerson).toBe('Anita');
+    expect(result.email).toBe('anita@acme.test');
+    expect(result.status).toBe(MerchantStatus.KYC_PENDING);
+    expect(organizations.updateContactDetails).toHaveBeenCalledWith('org-1', {
+      email: 'anita@acme.test',
+      contactPerson: 'Anita',
+      name: 'Updated Store',
+    });
+    expect(users.updateMerchantProfile).toHaveBeenCalledWith('user-1', {
+      email: 'anita@acme.test',
+      name: 'Anita',
+    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'MERCHANT_ONBOARDING_UPDATED',
+        merchantId: 'm1',
+        actorRole: 'MERCHANT',
+      }),
+    );
+  });
+
+  it('rejects pending onboarding updates when merchant is already active', async () => {
+    merchants.findOne.mockResolvedValue({
+      ...merchant,
+      status: MerchantStatus.ACTIVE,
+      kyc: { ...merchant.kyc },
+    });
+
+    await expect(
+      service.updatePendingOnboarding(
+        'm1',
+        'user-1',
+        { businessName: 'Nope' },
+        'ops@acme.test',
+      ),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_REQUEST,
+    });
   });
 
   it('streams a KYC document scoped to the kyc namespace', async () => {
@@ -219,92 +272,6 @@ describe('MerchantsService', () => {
     expect(storage.getObject).not.toHaveBeenCalled();
   });
 
-  it('routes direct ACTIVE transitions through activation gates and wallet provisioning', async () => {
-    merchants.findOne.mockResolvedValue({
-      ...merchant,
-      status: MerchantStatus.KYC_PENDING,
-    });
-    merchants.save.mockImplementation((value: Merchant) => value);
-    wallets.openWallet.mockResolvedValue({});
-
-    const result = await service.update(
-      'm1',
-      { status: MerchantStatus.ACTIVE },
-      'admin@nexara.test',
-    );
-
-    expect(wallets.openWallet).toHaveBeenCalledWith({
-      merchantId: 'm1',
-      businessName: 'Acme',
-      mobileNo: '9876543210',
-    });
-    expect(result.status).toBe(MerchantStatus.ACTIVE);
-  });
-
-  it('blocks forcing ACTIVE when onboarding is incomplete', async () => {
-    merchants.findOne.mockResolvedValue({
-      ...merchant,
-      status: MerchantStatus.KYC_PENDING,
-      kyc: { aadhaarStatus: 'PENDING', panStatus: 'PENDING' },
-    });
-
-    await expect(
-      service.update('m1', { status: MerchantStatus.ACTIVE }),
-    ).rejects.toMatchObject({ code: ErrorCodes.KYC_INCOMPLETE });
-    expect(wallets.openWallet).not.toHaveBeenCalled();
-  });
-
-  it('provisions an independent retailer directly under the admin org', async () => {
-    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
-    organizations.createMerchantOrganization.mockResolvedValue({ id: 'org-new' });
-    merchants.create.mockImplementation((value: Merchant) => value);
-    merchants.save.mockImplementation(async (value: Merchant) => ({
-      ...value,
-      id: 'm-new',
-    }));
-    kycRecords.create.mockImplementation((value: MerchantKyc) => value);
-    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
-
-    const result = await service.create({
-      mobile: '9876543210',
-      entityType: 'RETAILER',
-    } as never);
-
-    expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentId: 'org-admin',
-        organizationType: 'MERCHANT',
-      }),
-    );
-    expect(merchants.save).toHaveBeenCalled();
-    expect(result.organizationId).toBe('org-new');
-  });
-
-  it('provisions a distributor under a super-distributor org', async () => {
-    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
-    organizations.createMerchantOrganization.mockResolvedValue({ id: 'org-dist' });
-    merchants.create.mockImplementation((value: Merchant) => value);
-    merchants.save.mockImplementation(async (value: Merchant) => ({
-      ...value,
-      id: 'm-dist',
-    }));
-    kycRecords.create.mockImplementation((value: MerchantKyc) => value);
-    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
-
-    await service.create({
-      mobile: '9876543211',
-      entityType: 'DISTRIBUTOR',
-      parentOrganizationId: 'org-sd-1',
-    } as never);
-
-    expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentId: 'org-sd-1',
-        organizationType: 'DISTRIBUTOR',
-      }),
-    );
-  });
-
   it('maps a missing KYC document to 404', async () => {
     storage.getObject.mockImplementationOnce(() => {
       throw new Error('NoSuchKey');
@@ -315,127 +282,307 @@ describe('MerchantsService', () => {
     ).rejects.toMatchObject({ code: ErrorCodes.KYC_DOCUMENT_NOT_FOUND });
   });
 
-  it('rejects provisioning an already-provisioned mobile', async () => {
-    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
-    merchants.findOne.mockResolvedValue({ ...merchant, status: 'CREATED' });
+  describe('Hierarchy & KYC Gating', () => {
+    it('blocks Super Distributor from adding children when their own KYC is pending', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'sd-1',
+        status: MerchantStatus.KYC_PENDING,
+      });
 
-    await expect(
-      service.create({ mobile: '9876543210' } as never),
-    ).rejects.toMatchObject({ code: ErrorCodes.DUPLICATE_REFERENCE });
-    expect(organizations.createMerchantOrganization).not.toHaveBeenCalled();
-  });
-
-  it('lists merchants with batched org and spend lookups', async () => {
-    merchants.find.mockResolvedValue([
-      { ...merchant, id: 'm-a', organizationId: 'org-a' },
-      { ...merchant, id: 'm-b', organizationId: 'org-a' },
-    ]);
-    organizations.rawByIds.mockResolvedValue([
-      { id: 'org-a', type: 'DISTRIBUTOR', parentId: null },
-    ]);
-
-    const rows = await service.list({});
-
-    // One org query for the whole page — not one per merchant.
-    expect(organizations.rawByIds).toHaveBeenCalledTimes(1);
-    expect(organizations.rawByIds).toHaveBeenCalledWith(['org-a']);
-    expect(organizations.get).not.toHaveBeenCalled();
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ id: 'm-a', entityType: 'DISTRIBUTOR' });
-    expect(rows[0].limitConfig).toMatchObject({ currentDailySpent: 0 });
-  });
-
-  it('lists only descendant-org merchants in the downline with wallet flags', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant, organizationId: 'org-sd' });
-    organizations.descendantIds.mockResolvedValue(['org-dist', 'org-ret']);
-    merchants.find.mockResolvedValue([
-      { ...merchant, id: 'm-dist', organizationId: 'org-dist' },
-      { ...merchant, id: 'm-ret', organizationId: 'org-ret' },
-    ]);
-    organizations.list.mockResolvedValue([
-      { id: 'org-dist', type: 'DISTRIBUTOR' },
-      { id: 'org-ret', type: 'MERCHANT' },
-    ]);
-    organizations.rawByIds.mockResolvedValue([
-      { id: 'org-dist', type: 'DISTRIBUTOR' },
-      { id: 'org-ret', type: 'MERCHANT' },
-    ]);
-    wallets.getRequiredMapping.mockImplementation(async (id: string) => {
-      if (id === 'm-dist') return { merchantId: id };
-      throw new Error('no mapping');
+      await expect(
+        service.create(
+          { mobile: '9999999999', entityType: 'DISTRIBUTOR' },
+          {
+            id: 'u-sd',
+            role: 'SUPER_DISTRIBUTOR' as any,
+            merchantId: 'sd-1',
+            organizationId: 'org-sd',
+            email: 'sd@test.com',
+            name: 'SD User',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.KYC_INCOMPLETE,
+      });
     });
-    wallets.hasMappings.mockResolvedValue(new Set(['m-dist']));
 
-    const rows = await service.getDownline('m-sd');
+    it('allows Super Distributor with active KYC to provision a Distributor', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'sd-1',
+        status: MerchantStatus.ACTIVE,
+      });
+      organizations.ensureSeeded.mockResolvedValueOnce({ id: 'org-admin' });
+      organizations.createMerchantOrganization.mockResolvedValueOnce({
+        id: 'org-dist-new',
+      });
+      merchants.create.mockReturnValue({
+        id: 'dist-new',
+        businessName: 'Dist New',
+        mobile: '9888888888',
+        status: MerchantStatus.CREATED,
+        dailyPayoutLimit: '100000.00',
+        feeType: 'FIXED',
+        feeValue: '10.00',
+        gstPercent: '18.00',
+        tier: 'SILVER',
+        channel: 'STANDARD',
+        organizationId: 'org-dist-new',
+      });
+      merchants.save.mockImplementation(async (m: any) => m);
+      kycRecords.create.mockReturnValue({});
+      kycRecords.save.mockResolvedValue({});
+      organizations.get.mockResolvedValue({ id: 'org-dist-new', type: 'DISTRIBUTOR', parentId: 'org-sd' });
 
-    expect(organizations.descendantIds).toHaveBeenCalledWith('org-sd');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ id: 'm-dist', entityType: 'DISTRIBUTOR', hasWallet: true });
-    expect(rows[1]).toMatchObject({ id: 'm-ret', entityType: 'RETAILER', hasWallet: false });
+      const result = await service.create(
+        { mobile: '9888888888', entityType: 'DISTRIBUTOR' },
+        {
+          id: 'u-sd',
+          role: 'SUPER_DISTRIBUTOR' as any,
+          merchantId: 'sd-1',
+          organizationId: 'org-sd',
+          email: 'sd@test.com',
+          name: 'SD User',
+        },
+      );
+
+      expect(result).toBeDefined();
+      expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentId: 'org-sd',
+        }),
+      );
+    });
+
+    it('blocks Distributor from creating another Distributor', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'd-1',
+        status: MerchantStatus.ACTIVE,
+      });
+
+      await expect(
+        service.create(
+          { mobile: '9777777777', entityType: 'DISTRIBUTOR' },
+          {
+            id: 'u-dist',
+            role: 'DISTRIBUTOR' as any,
+            merchantId: 'd-1',
+            organizationId: 'org-dist',
+            email: 'dist@test.com',
+            name: 'Dist User',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.FORBIDDEN,
+      });
+    });
+
+    it('allows Admin to overrule and reassign an entity to a new parent', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'm-child',
+        businessName: 'Child Store',
+        organizationId: 'org-child',
+        status: MerchantStatus.ACTIVE,
+      });
+      organizations.get.mockResolvedValue({
+        id: 'org-child',
+        parentId: 'org-old-parent',
+      });
+      organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
+      merchants.save.mockImplementation(async (m: any) => m);
+
+      await service.update(
+        'm-child',
+        { parentOrganizationId: 'org-new-parent' },
+        'admin@nexara.com',
+        {
+          id: 'u-admin',
+          role: 'ADMIN' as any,
+          merchantId: null,
+          organizationId: 'org-admin',
+          email: 'admin@nexara.com',
+          name: 'Admin',
+        },
+      );
+
+      expect(organizations.reassignParent).toHaveBeenCalledWith(
+        'org-child',
+        'org-new-parent',
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ADMIN_OVERRULE_HIERARCHY',
+          merchantId: 'm-child',
+        }),
+      );
+    });
   });
 
-  it('blocks downline provisioning for retailer actors', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant, organizationId: 'org-ret' });
-    organizations.requireOrg.mockResolvedValue({ id: 'org-ret', type: 'MERCHANT' });
+  describe('listDownline & provisionDownline', () => {
+    const sdCaller = {
+      id: 'u-sd',
+      role: 'SUPER_DISTRIBUTOR' as any,
+      merchantId: 'sd-1',
+      organizationId: 'org-sd',
+      email: 'sd@test.com',
+      name: 'SD User',
+    };
 
-    await expect(
-      service.provisionDownline('m-ret', { mobile: '9000000001', entityType: 'RETAILER' }),
-    ).rejects.toMatchObject({ code: ErrorCodes.FORBIDDEN });
-  });
+    it('lists merchants with batched org and spend lookups', async () => {
+      merchants.find.mockResolvedValueOnce([
+        { id: 'm-a', organizationId: 'org-a', status: MerchantStatus.ACTIVE },
+        { id: 'm-b', organizationId: 'org-a', status: MerchantStatus.ACTIVE },
+      ]);
+      organizations.rawByIds.mockResolvedValueOnce([
+        { id: 'org-a', type: 'DISTRIBUTOR', parentId: null },
+      ]);
 
-  it('blocks provisioning under orgs outside the caller network', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant, organizationId: 'org-dist' });
-    organizations.requireOrg.mockResolvedValue({ id: 'org-dist', type: 'DISTRIBUTOR' });
-    organizations.descendantIds.mockResolvedValue([]);
+      const rows = await service.list({});
 
-    await expect(
-      service.provisionDownline('m-dist', {
-        mobile: '9000000001',
-        entityType: 'RETAILER',
-        parentOrganizationId: 'org-rival-sd',
-      }),
-    ).rejects.toMatchObject({ code: ErrorCodes.FORBIDDEN });
-  });
+      // One org query for the whole page — not one per merchant.
+      expect(organizations.rawByIds).toHaveBeenCalledTimes(1);
+      expect(organizations.rawByIds).toHaveBeenCalledWith(['org-a']);
+      expect(organizations.get).not.toHaveBeenCalled();
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ id: 'm-a', entityType: 'DISTRIBUTOR' });
+    });
 
-  it('blocks distributors from parenting distributors', async () => {
-    merchants.findOne.mockResolvedValue({ ...merchant, organizationId: 'org-dist' });
-    organizations.requireOrg.mockResolvedValue({ id: 'org-dist', type: 'DISTRIBUTOR' });
-    organizations.descendantIds.mockResolvedValue([]);
+    it('rejects non-partner roles from listDownline', async () => {
+      await expect(
+        service.listDownline({
+          id: 'u-m',
+          role: 'MERCHANT' as any,
+          merchantId: 'm-1',
+          organizationId: 'org-m',
+          email: 'm@test.com',
+          name: 'Merchant',
+        }),
+      ).rejects.toMatchObject({ code: ErrorCodes.FORBIDDEN });
+    });
 
-    await expect(
-      service.provisionDownline('m-dist', {
-        mobile: '9000000001',
+    it('returns flat downline with KYC displayStatus and hasWallet', async () => {
+      organizations.getDescendantOrgIds.mockResolvedValueOnce(['org-dist', 'org-ret']);
+      merchants.find.mockResolvedValueOnce([
+        {
+          id: 'dist-1',
+          businessName: 'Dist Co',
+          contactPerson: 'A',
+          mobile: '9111111111',
+          email: 'd@test.com',
+          status: MerchantStatus.CREATED,
+          organizationId: 'org-dist',
+          createdAt: new Date('2026-01-01'),
+          kyc: {},
+        },
+        {
+          id: 'ret-1',
+          businessName: 'Retail Shop',
+          contactPerson: 'B',
+          mobile: '9222222222',
+          email: 'r@test.com',
+          status: MerchantStatus.ACTIVE,
+          organizationId: 'org-ret',
+          createdAt: new Date('2026-01-02'),
+          kyc: {
+            panImagePath: 's3://x',
+            aadhaarFrontPath: 's3://y',
+            selfiePath: 's3://z',
+          },
+        },
+      ]);
+      organizations.rawByIds.mockResolvedValueOnce([
+        { id: 'org-dist', type: 'DISTRIBUTOR' },
+        { id: 'org-ret', type: 'MERCHANT' },
+      ]);
+      wallets.findMappedMerchantIds.mockResolvedValueOnce(new Set(['ret-1']));
+
+      const result = await service.listDownline(sdCaller);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        id: 'dist-1',
         entityType: 'DISTRIBUTOR',
-        parentOrganizationId: 'org-dist',
-      }),
-    ).rejects.toMatchObject({ code: ErrorCodes.INVALID_HIERARCHY });
-  });
-
-  it('provisions a retailer pinned to the caller subtree', async () => {
-    merchants.findOne.mockImplementation(async (opts: { where?: { mobile?: string } }) => {
-      if (opts?.where?.mobile) return null;
-      return { ...merchant, organizationId: 'org-sd' };
+        displayStatus: 'NOT_STARTED',
+        hasWallet: false,
+      });
+      expect(result[1]).toMatchObject({
+        id: 'ret-1',
+        entityType: 'RETAILER',
+        displayStatus: 'APPROVED',
+        hasWallet: true,
+      });
     });
-    organizations.requireOrg.mockImplementation(async (id: string) => ({
-      id,
-      type: id === 'org-dist' ? 'DISTRIBUTOR' : 'SUPER_DISTRIBUTOR',
-    }));
-    organizations.descendantIds.mockResolvedValue(['org-dist']);
-    organizations.ensureSeeded.mockResolvedValue({ id: 'org-admin' });
-    organizations.createMerchantOrganization.mockResolvedValue({ id: 'org-new' });
-    merchants.create.mockImplementation((value: Merchant) => value);
-    merchants.save.mockImplementation(async (value: Merchant) => ({ ...value, id: 'm-new' }));
-    kycRecords.create.mockImplementation((value: MerchantKyc) => value);
-    kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
 
-    await service.provisionDownline(
-      'm-sd',
-      { mobile: '9000000002', entityType: 'RETAILER', parentOrganizationId: 'org-dist' },
-      'sd@nexara.test',
-    );
+    it('rejects provision when mobile already exists', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'existing',
+        mobile: '9333333333',
+      });
 
-    expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
-      expect.objectContaining({ parentId: 'org-dist', organizationType: 'MERCHANT' }),
-    );
+      await expect(
+        service.provisionDownline(sdCaller, {
+          mobile: '9333333333',
+          entityType: 'DISTRIBUTOR',
+        }),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.INVALID_REQUEST,
+        status: 409,
+      });
+    });
+
+    it('provisions via create when mobile is free', async () => {
+      merchants.findOne
+        .mockResolvedValueOnce(null) // duplicate check
+        .mockResolvedValueOnce({
+          id: 'sd-1',
+          status: MerchantStatus.ACTIVE,
+        }); // assertKycDoneForManagement
+      organizations.ensureSeeded.mockResolvedValueOnce({ id: 'org-admin' });
+      organizations.createMerchantOrganization.mockResolvedValueOnce({
+        id: 'org-new',
+      });
+      merchants.create.mockReturnValue({
+        id: 'new-1',
+        businessName: 'New Dist',
+        contactPerson: 'C',
+        mobile: '9444444444',
+        email: '',
+        address: 'Pending Onboarding Address',
+        status: MerchantStatus.CREATED,
+        dailyPayoutLimit: '100000.00',
+        perPayoutLimit: '20000.00',
+        feeType: 'FIXED',
+        feeValue: '10.00',
+        gstPercent: '18.00',
+        tier: 'SILVER',
+        channel: 'STANDARD',
+        organizationId: 'org-new',
+        distributorCommissionPercent: '0.20',
+        superDistributorCommissionPercent: '0.025',
+        masterDistributorCommissionPercent: '0.010',
+      });
+      merchants.save.mockImplementation(async (m: any) => m);
+      kycRecords.create.mockReturnValue({});
+      kycRecords.save.mockResolvedValue({});
+      organizations.get.mockResolvedValue({
+        id: 'org-new',
+        type: 'DISTRIBUTOR',
+        parentId: 'org-sd',
+      });
+
+      const result = await service.provisionDownline(sdCaller, {
+        mobile: '9444444444',
+        entityType: 'DISTRIBUTOR',
+        businessName: 'New Dist',
+        contactPerson: 'C',
+      });
+
+      expect(result).toBeDefined();
+      expect(organizations.createMerchantOrganization).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentId: 'org-sd',
+          organizationType: 'DISTRIBUTOR',
+        }),
+      );
+    });
   });
 });

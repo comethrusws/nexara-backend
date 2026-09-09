@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { KycModule } from '../../integrations/kyc/kyc.module';
 import { StorageModule } from '../../integrations/storage/storage.module';
@@ -19,7 +19,7 @@ import { MerchantsService } from './merchants.service';
     TypeOrmModule.forFeature([Merchant, MerchantKyc, Payout]),
     KycModule,
     StorageModule,
-    WalletModule,
+    forwardRef(() => WalletModule),
     OrganizationsModule,
     AuthModule,
     NotificationsModule,

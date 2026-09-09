@@ -30,7 +30,7 @@ export class WebhooksOpsController {
 }
 
 @Controller('me/webhooks')
-@Roles(UserRole.MERCHANT)
+@Roles(UserRole.MERCHANT, UserRole.DISTRIBUTOR, UserRole.SUPER_DISTRIBUTOR)
 @ApiTags('Merchant portal')
 @ApiBearerAuth('JWT')
 export class WebhooksMerchantController {
