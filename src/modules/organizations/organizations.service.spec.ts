@@ -63,6 +63,36 @@ describe('OrganizationsService entitlements', () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
+    // Default dataset shared by the batched queries: skeleton rows for the
+    // ancestor walk, full rows for In(...) lookups.
+    const allOrgs = [admin, distributor, merchant];
+    const idsOf = (id: unknown): string[] | null => {
+      if (typeof id === 'string') return [id];
+      if (id && typeof id === 'object' && Array.isArray((id as any).value)) {
+        return (id as any).value as string[];
+      }
+      return null;
+    };
+    orgs.find.mockImplementation(async (opts?: any) => {
+      const ids = opts?.where?.id ? idsOf(opts.where.id) : null;
+      if (ids) {
+        return allOrgs.filter((o) => ids.includes(o.id));
+      }
+      return allOrgs.map((o) => ({ id: o.id, parentId: o.parentId }));
+    });
+    grants.find.mockImplementation(async (opts?: any) => {
+      const orgId = opts?.where?.organizationId;
+      const ids = idsOf(orgId) ?? (typeof orgId === 'string' ? [orgId] : []);
+      // Fixture grants live on admin; everything else inherits.
+      if (ids.includes('admin')) {
+        return [
+          { organizationId: 'admin', featureCode: Features.WALLET, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT_IMPS, enabled: true },
+        ];
+      }
+      return [];
+    });
     const module = await Test.createTestingModule({
       providers: [
         OrganizationsService,
@@ -85,12 +115,15 @@ describe('OrganizationsService entitlements', () => {
       }
       return admin;
     });
-    grants.find.mockImplementation(async ({ where }: { where: { organizationId: string } }) => {
-      if (where.organizationId === 'admin') {
+    grants.find.mockImplementation(async ({ where }: { where: { organizationId: any } }) => {
+      const ids = Array.isArray(where.organizationId?.value)
+        ? where.organizationId.value
+        : [where.organizationId];
+      if (ids.includes('admin')) {
         return [
-          { featureCode: Features.WALLET, enabled: true },
-          { featureCode: Features.PAYOUT, enabled: true },
-          { featureCode: Features.PAYOUT_IMPS, enabled: true },
+          { organizationId: 'admin', featureCode: Features.WALLET, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT_IMPS, enabled: true },
         ];
       }
       return [];
@@ -114,22 +147,26 @@ describe('OrganizationsService entitlements', () => {
       }
       return admin;
     });
-    grants.find.mockImplementation(async ({ where }: { where: { organizationId: string } }) => {
-      if (where.organizationId === 'admin') {
-        return [
-          { featureCode: Features.WALLET, enabled: true },
-          { featureCode: Features.PAYOUT, enabled: true },
-          { featureCode: Features.PAYOUT_IMPS, enabled: true },
-          { featureCode: Features.PAYOUT_UPI, enabled: true },
-        ];
+    grants.find.mockImplementation(async ({ where }: { where: { organizationId: any } }) => {
+      const ids = Array.isArray(where.organizationId?.value)
+        ? where.organizationId.value
+        : [where.organizationId];
+      const rows: any[] = [];
+      if (ids.includes('admin')) {
+        rows.push(
+          { organizationId: 'admin', featureCode: Features.WALLET, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT_IMPS, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT_UPI, enabled: true },
+        );
       }
-      if (where.organizationId === 'merch') {
-        return [
-          { featureCode: Features.WALLET, enabled: true },
-          { featureCode: Features.PAYOUT_UPI, enabled: true },
-        ];
+      if (ids.includes('merch')) {
+        rows.push(
+          { organizationId: 'merch', featureCode: Features.WALLET, enabled: true },
+          { organizationId: 'merch', featureCode: Features.PAYOUT_UPI, enabled: true },
+        );
       }
-      return [];
+      return rows;
     });
 
     const features = await service.resolveFeatures('merch');
@@ -165,15 +202,19 @@ describe('OrganizationsService entitlements', () => {
       }
       return admin;
     });
-    grants.find.mockImplementation(async ({ where }: { where: { organizationId: string } }) => {
-      if (where.organizationId === 'admin') {
-        return [
-          { featureCode: Features.WALLET, enabled: true },
-          { featureCode: Features.PAYOUT, enabled: true },
-          { featureCode: Features.PAYOUT_IMPS, enabled: true },
-        ];
+    grants.find.mockImplementation(async ({ where }: { where: { organizationId: any } }) => {
+      const ids = Array.isArray(where.organizationId?.value)
+        ? where.organizationId.value
+        : [where.organizationId];
+      const rows: any[] = [];
+      if (ids.includes('admin')) {
+        rows.push(
+          { organizationId: 'admin', featureCode: Features.WALLET, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT, enabled: true },
+          { organizationId: 'admin', featureCode: Features.PAYOUT_IMPS, enabled: true },
+        );
       }
-      return [];
+      return rows;
     });
 
     await expect(service.assertPayoutRail('merch', 'IMPS')).resolves.toBeUndefined();

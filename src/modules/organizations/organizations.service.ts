@@ -367,17 +367,24 @@ export class OrganizationsService implements OnModuleInit {
 
   async resolveFeatures(organizationId: string): Promise<FeatureCode[]> {
     const chain = await this.chain(organizationId);
+    // One grants query for the whole chain instead of one per level.
+    const all = await this.grants.find({
+      where: { organizationId: In(chain.map((org) => org.id)), enabled: true },
+    });
+    const codesByOrg = new Map<string, Set<FeatureCode>>();
+    for (const row of all) {
+      const set = codesByOrg.get(row.organizationId) ?? new Set<FeatureCode>();
+      set.add(row.featureCode as FeatureCode);
+      codesByOrg.set(row.organizationId, set);
+    }
     let allowed = new Set<FeatureCode>(
       FEATURE_CATALOG.map((item) => item.code),
     );
     for (const org of chain) {
-      const own = await this.grants.find({
-        where: { organizationId: org.id, enabled: true },
-      });
-      if (own.length === 0) {
+      const ownCodes = codesByOrg.get(org.id);
+      if (!ownCodes || ownCodes.size === 0) {
         continue;
       }
-      const ownCodes = new Set(own.map((row) => row.featureCode));
       allowed = new Set(
         [...allowed].filter((code) => ownCodes.has(code)),
       );
@@ -501,24 +508,32 @@ export class OrganizationsService implements OnModuleInit {
   }
 
   private async chain(organizationId: string): Promise<Organization[]> {
-    const result: Organization[] = [];
-    let current: Organization | null = await this.requireOrg(organizationId);
+    // Single-query ancestor walk: load the id/parent skeleton once and walk
+    // it in memory instead of one findOne per level.
+    const root = await this.requireOrg(organizationId);
+    const all = await this.orgs.find({ select: { id: true, parentId: true } });
+    const byId = new Map(all.map((org) => [org.id, org.parentId ?? null]));
+    // Full rows only for the (short) ancestor path itself.
+    const pathIds: string[] = [];
     const seen = new Set<string>();
-    while (current) {
-      if (seen.has(current.id)) {
+    let currentId: string | null = organizationId;
+    while (currentId) {
+      if (seen.has(currentId)) {
         throw new NexaraError(
           ErrorCodes.INVALID_HIERARCHY,
           'Organization hierarchy contains a cycle',
           500,
         );
       }
-      seen.add(current.id);
-      result.unshift(current);
-      current = current.parentId
-        ? await this.orgs.findOne({ where: { id: current.parentId } })
-        : null;
+      seen.add(currentId);
+      pathIds.unshift(currentId);
+      currentId = byId.get(currentId) ?? null;
     }
-    return result;
+    const rows = await this.orgs.find({ where: { id: In(pathIds) } });
+    const byRowId = new Map(rows.map((org) => [org.id, org]));
+    // Preserve the root 404 semantics: requireOrg above already threw for a
+    // missing leaf; ancestors are guaranteed present via FK.
+    return pathIds.map((id) => byRowId.get(id) ?? root);
   }
 
   private assertChildAllowed(

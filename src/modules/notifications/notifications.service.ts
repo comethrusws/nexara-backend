@@ -137,15 +137,24 @@ export class NotificationsService {
   async markAllRead(user: AuthUser) {
     const visible = await this.listFor(user);
     const unread = visible.filter((n) => !n.read);
-    for (const n of unread) {
-      const existing = await this.reads.findOne({
-        where: { userId: user.id, notificationId: n.id },
-      });
-      if (!existing) {
-        await this.reads.save(
+    if (unread.length === 0) {
+      return { success: true, count: 0 };
+    }
+    // One lookup for all unread + one bulk insert instead of 2N queries.
+    const existing = await this.reads.find({
+      where: {
+        userId: user.id,
+        notificationId: In(unread.map((n) => n.id)),
+      },
+    });
+    const seen = new Set(existing.map((row) => row.notificationId));
+    const missing = unread.filter((n) => !seen.has(n.id));
+    if (missing.length > 0) {
+      await this.reads.save(
+        missing.map((n) =>
           this.reads.create({ userId: user.id, notificationId: n.id }),
-        );
-      }
+        ),
+      );
     }
     return { success: true, count: unread.length };
   }

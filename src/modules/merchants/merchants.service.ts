@@ -1098,8 +1098,14 @@ export class MerchantsService implements OnModuleInit {
       selfie: merchant.kyc.selfiePath,
     };
     const result: Record<string, string | null> = {};
-    for (const [label, stored] of Object.entries(paths)) {
-      result[label] = stored ? await this.presignStoredObject(stored) : null;
+    const entries = await Promise.all(
+      Object.entries(paths).map(async ([label, stored]) => {
+        const url = stored ? await this.presignStoredObject(stored) : null;
+        return [label, url] as const;
+      }),
+    );
+    for (const [label, url] of entries) {
+      result[label] = url;
     }
     return result;
   }
@@ -1886,10 +1892,12 @@ export class MerchantsService implements OnModuleInit {
   }
 
   private async toView(merchant: Merchant) {
-    const entitlements = merchant.organizationId
-      ? await this.organizations.get(merchant.organizationId)
-      : null;
-    const dailySpent = await this.currentDailySpent(merchant.id);
+    const [entitlements, dailySpent] = await Promise.all([
+      merchant.organizationId
+        ? this.organizations.get(merchant.organizationId)
+        : Promise.resolve(null),
+      this.currentDailySpent(merchant.id),
+    ]);
     return this.buildView(merchant, entitlements, dailySpent);
   }
 

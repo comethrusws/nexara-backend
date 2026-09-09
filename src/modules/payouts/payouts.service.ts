@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import {
   addAmounts,
@@ -202,7 +202,23 @@ export class PayoutsService {
       where,
       order: { createdAt: 'DESC' },
     });
-    return Promise.all(rows.map((row) => this.toView(row)));
+    if (rows.length === 0) {
+      return [];
+    }
+    // Batched: one status-history query for all rows instead of one per row.
+    const events = await this.statusEvents.find({
+      where: { payoutId: In(rows.map((row) => row.id)) },
+      order: { createdAt: 'ASC' },
+    });
+    const eventsByPayout = new Map<string, typeof events>();
+    for (const event of events) {
+      const list = eventsByPayout.get(event.payoutId) ?? [];
+      list.push(event);
+      eventsByPayout.set(event.payoutId, list);
+    }
+    return Promise.all(
+      rows.map((row) => this.toView(row, eventsByPayout.get(row.id) ?? [])),
+    );
   }
 
   async enquire(id: string) {
@@ -485,15 +501,20 @@ export class PayoutsService {
   ): Promise<void> {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
+    // Date filter runs in SQL — the old version loaded the full non-failed
+    // history and filtered in JS.
     const used = await this.payouts.find({
       where: {
         merchantId,
         status: Not(In([PayoutStatus.FAILED])),
+        createdAt: MoreThanOrEqual(start),
       },
+      select: { amount: true },
     });
-    const todayUsed = used
-      .filter((item) => item.createdAt >= start)
-      .reduce((sum, item) => addAmounts(sum, item.amount), '0.00');
+    const todayUsed = used.reduce(
+      (sum, item) => addAmounts(sum, item.amount),
+      '0.00',
+    );
     const nextTotal = addAmounts(todayUsed, payoutAmount);
     if (
       parseNonNegativeAmount(nextTotal) > parseNonNegativeAmount(dailyLimit)
@@ -550,11 +571,13 @@ export class PayoutsService {
     return payout;
   }
 
-  private async toView(payout: Payout) {
-    const statusHistory = await this.statusEvents.find({
-      where: { payoutId: payout.id },
-      order: { createdAt: 'ASC' },
-    });
+  private async toView(payout: Payout, statusHistory?: Awaited<ReturnType<typeof this.statusEvents.find>>) {
+    const history =
+      statusHistory ??
+      (await this.statusEvents.find({
+        where: { payoutId: payout.id },
+        order: { createdAt: 'ASC' },
+      }));
     return {
       id: payout.id,
       merchantId: payout.merchantId,
@@ -586,7 +609,7 @@ export class PayoutsService {
       failureReason: payout.failureReason,
       createdAt: payout.createdAt,
       updatedAt: payout.updatedAt,
-      statusHistory: statusHistory.map((item) => ({
+      statusHistory: history.map((item) => ({
         status: item.status,
         timestamp: item.createdAt,
         reason: item.reason,
