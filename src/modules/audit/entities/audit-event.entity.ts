@@ -13,7 +13,7 @@ export class AuditEvent {
   @Column({ name: 'actor_email', type: 'varchar', length: 255 })
   actorEmail: string;
 
-  @Column({ name: 'actor_role', type: 'varchar', length: 16 })
+  @Column({ name: 'actor_role', type: 'varchar', length: 32 })
   actorRole: string;
 
   @Column({ name: 'action', type: 'varchar', length: 64 })
