@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, In, Not, Repository } from 'typeorm';
@@ -45,6 +45,7 @@ export class MerchantsService implements OnModuleInit {
     @Inject(KYC_PORT) private readonly kyc: KycPort,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStoragePort,
     private readonly config: ConfigService,
+    @Inject(forwardRef(() => WalletService))
     private readonly wallets: WalletService,
     private readonly organizations: OrganizationsService,
     private readonly users: UsersService,
@@ -1172,7 +1173,7 @@ export class MerchantsService implements OnModuleInit {
     if (merchant.status !== MerchantStatus.ACTIVE) {
       throw new NexaraError(
         ErrorCodes.MERCHANT_INACTIVE,
-        'Only ACTIVE merchants may initiate payouts',
+        'Only ACTIVE merchants may use wallet funding and payouts',
         409,
       );
     }
@@ -1851,10 +1852,7 @@ export class MerchantsService implements OnModuleInit {
       email: merchant.email,
       address: merchant.address,
       status: merchant.status,
-      displayStatus:
-        merchant.status === MerchantStatus.KYC_PENDING
-          ? 'PENDING_KYC'
-          : merchant.status,
+      displayStatus: this.resolveKycDisplayStatus(merchant),
       entityType,
       parentId: entitlements?.parentId ?? null,
       dailyPayoutLimit: merchant.dailyPayoutLimit,

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
@@ -8,6 +8,7 @@ import {
   StatementLine,
   WalletBalances,
 } from '../../integrations/fineract/fineract.types';
+import { MerchantsService } from '../merchants/merchants.service';
 import {
   FundingChannel,
   FundingStatus,
@@ -32,6 +33,8 @@ export class WalletService {
     private readonly fundings: Repository<WalletFunding>,
     @Inject(FINERACT_PORT)
     private readonly fineract: FineractPort,
+    @Inject(forwardRef(() => MerchantsService))
+    private readonly merchants: MerchantsService,
   ) {}
 
   async openWallet(input: {
@@ -114,6 +117,8 @@ export class WalletService {
     notes?: string;
     paymentDate?: string;
   }) {
+    await this.merchants.requireActive(input.merchantId);
+
     if (input.channel !== FundingChannel.CASH) {
       const pending = await this.fundings.save(
         this.fundings.create({
