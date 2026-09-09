@@ -121,6 +121,21 @@ export class AuthService {
 
     if (purpose === 'LOGIN') {
       if (!user || user.status !== 'ACTIVE') {
+        // Provisioned but never onboarded: no user row exists yet. Tell the
+        // client to route into onboarding instead of dead-ending at login.
+        if (!user) {
+          const provisioned = await this.merchants.findOne({
+            where: { mobile: cleanMobile },
+            order: { createdAt: 'DESC' },
+          });
+          if (provisioned) {
+            throw new NexaraError(
+              ErrorCodes.ONBOARDING_REQUIRED,
+              'This number is provisioned but onboarding is not complete. Verify an onboarding code to continue.',
+              409,
+            );
+          }
+        }
         throw new NexaraError(
           ErrorCodes.UNAUTHORIZED,
           'This mobile number is not registered',
