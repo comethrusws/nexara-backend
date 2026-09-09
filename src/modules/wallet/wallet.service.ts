@@ -207,7 +207,7 @@ export class WalletService {
     }
     const rows = await this.mappings.find({
       where: { merchantId: In(merchantIds) },
-      select: ['merchantId'],
+      select: { merchantId: true },
     });
     return new Set(rows.map((row) => row.merchantId));
   }
