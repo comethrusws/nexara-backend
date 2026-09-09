@@ -120,21 +120,28 @@ export class AuthService {
     const user = await this.users.findByMobile(cleanMobile);
 
     if (purpose === 'LOGIN') {
-      if (!user || user.status !== 'ACTIVE') {
+      if (user && user.status !== 'ACTIVE') {
+        // Disabled accounts must not masquerade as "not registered" — and
+        // must not be routable back into onboarding to evade the disable.
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'This account has been disabled. Please contact Nexara support.',
+          403,
+        );
+      }
+      if (!user) {
         // Provisioned but never onboarded: no user row exists yet. Tell the
         // client to route into onboarding instead of dead-ending at login.
-        if (!user) {
-          const provisioned = await this.merchants.findOne({
-            where: { mobile: cleanMobile },
-            order: { createdAt: 'DESC' },
-          });
-          if (provisioned) {
-            throw new NexaraError(
-              ErrorCodes.ONBOARDING_REQUIRED,
-              'This number is provisioned but onboarding is not complete. Verify an onboarding code to continue.',
-              409,
-            );
-          }
+        const provisioned = await this.merchants.findOne({
+          where: { mobile: cleanMobile },
+          order: { createdAt: 'DESC' },
+        });
+        if (provisioned) {
+          throw new NexaraError(
+            ErrorCodes.ONBOARDING_REQUIRED,
+            'This number is provisioned but onboarding is not complete. Verify an onboarding code to continue.',
+            409,
+          );
         }
         throw new NexaraError(
           ErrorCodes.UNAUTHORIZED,
@@ -210,6 +217,13 @@ export class AuthService {
           ErrorCodes.INVALID_REQUEST,
           'This mobile number is already registered. Please sign in instead.',
           409,
+        );
+      }
+      if (existing) {
+        throw new NexaraError(
+          ErrorCodes.FORBIDDEN,
+          'This account has been disabled. Please contact Nexara support.',
+          403,
         );
       }
       return {
