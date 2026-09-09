@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import {
   FINERACT_PORT,
@@ -198,6 +198,22 @@ export class WalletService {
       );
     }
     return mapping;
+  }
+
+  /**
+   * Wallet presence for a batch of merchants — ONE query. Used by downline
+   * rendering; the per-row `getRequiredMapping` in a loop was N queries.
+   */
+  async hasMappings(merchantIds: string[]): Promise<Set<string>> {
+    const unique = [...new Set(merchantIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return new Set();
+    }
+    const rows = await this.mappings.find({
+      where: { merchantId: In(unique) },
+      select: { merchantId: true },
+    });
+    return new Set(rows.map((row) => row.merchantId));
   }
 
   /**

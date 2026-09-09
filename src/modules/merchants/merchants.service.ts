@@ -1,7 +1,7 @@
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, In, Not, Repository } from 'typeorm';
+import { IsNull, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Payout, PayoutStatus } from '../payouts/entities/payout.entity';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { validateFeeSlabsJson } from '../../common/validation/fee-slabs.validator';
@@ -189,7 +189,30 @@ export class MerchantsService implements OnModuleInit {
 
   async list(filters?: { status?: string; search?: string }) {
     const filtered = await this.findFilteredMerchants(filters);
-    return Promise.all(filtered.map((row) => this.toView(row)));
+    if (filtered.length === 0) {
+      return [];
+    }
+    // Batched: 1 org query + 1 payouts query for the whole page instead of
+    // ~2N per-row queries (org entitlement view + full payout history scan).
+    const orgIds = [
+      ...new Set(
+        filtered
+          .map((row) => row.organizationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const [orgRows, spentByMerchant] = await Promise.all([
+      this.organizations.rawByIds(orgIds),
+      this.dailySpentByMerchantIds(filtered.map((row) => row.id)),
+    ]);
+    const orgById = new Map(orgRows.map((org) => [org.id, org]));
+    return filtered.map((row) =>
+      this.toListView(
+        row,
+        orgById.get(row.organizationId ?? ''),
+        spentByMerchant.get(row.id) ?? '0.00',
+      ),
+    );
   }
 
   async listKycVerifications(filters?: { status?: string; search?: string }) {
@@ -288,37 +311,41 @@ export class MerchantsService implements OnModuleInit {
       relations: { kyc: true },
       order: { createdAt: 'DESC' },
     });
-    const orgViews = await this.organizations.list();
-    const typeByOrgId = new Map(orgViews.map((org) => [org.id, org.type]));
-    return Promise.all(
-      rows.map(async (row) => {
-        let hasWallet = false;
-        try {
-          await this.wallets.getRequiredMapping(row.id);
-          hasWallet = true;
-        } catch {
-          hasWallet = false;
-        }
-        const orgType = typeByOrgId.get(row.organizationId ?? '');
-        return {
-          id: row.id,
-          businessName: row.businessName,
-          contactPerson: row.contactPerson,
-          mobile: row.mobile,
-          email: row.email,
-          status: row.status,
-          displayStatus: this.resolveKycDisplayStatus(row),
-          entityType:
-            orgType === OrganizationType.SUPER_DISTRIBUTOR ||
-            orgType === OrganizationType.DISTRIBUTOR
-              ? orgType
-              : 'RETAILER',
-          organizationId: row.organizationId,
-          createdAt: row.createdAt,
-          hasWallet,
-        };
-      }),
-    );
+    // Batched: org types for exactly these rows (1 query) + wallet presence
+    // for all rows (1 query). The old path ran a full heavyweight org scan
+    // plus one wallet lookup per downline member.
+    const orgIds = [
+      ...new Set(
+        rows
+          .map((row) => row.organizationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const [orgRows, walletHolders] = await Promise.all([
+      this.organizations.rawByIds(orgIds),
+      this.wallets.hasMappings(rows.map((row) => row.id)),
+    ]);
+    const typeByOrgId = new Map(orgRows.map((org) => [org.id, org.type]));
+    return rows.map((row) => {
+      const orgType = typeByOrgId.get(row.organizationId ?? '');
+      return {
+        id: row.id,
+        businessName: row.businessName,
+        contactPerson: row.contactPerson,
+        mobile: row.mobile,
+        email: row.email,
+        status: row.status,
+        displayStatus: this.resolveKycDisplayStatus(row),
+        entityType:
+          orgType === OrganizationType.SUPER_DISTRIBUTOR ||
+          orgType === OrganizationType.DISTRIBUTOR
+            ? orgType
+            : 'RETAILER',
+        organizationId: row.organizationId,
+        createdAt: row.createdAt,
+        hasWallet: walletHolders.has(row.id),
+      };
+    });
   }
 
   /**
@@ -849,18 +876,44 @@ export class MerchantsService implements OnModuleInit {
   }
 
   private async currentDailySpent(merchantId: string): Promise<string> {
+    const spent = await this.dailySpentByMerchantIds([merchantId]);
+    return spent.get(merchantId) ?? '0.00';
+  }
+
+  /**
+   * Today's settled spend for a batch of merchants — ONE query. The date
+   * and status filters run in SQL (the old per-row version loaded the full
+   * payout history and filtered in JS).
+   */
+  private async dailySpentByMerchantIds(
+    merchantIds: string[],
+  ): Promise<Map<string, string>> {
+    const totals = new Map<string, string>();
+    const unique = [...new Set(merchantIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return totals;
+    }
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     const rows = await this.payouts.find({
       where: {
-        merchantId,
+        merchantId: In(unique),
         status: Not(In([PayoutStatus.FAILED])),
+        createdAt: MoreThanOrEqual(start),
       },
+      select: { merchantId: true, amount: true },
     });
-    const total = rows
-      .filter((row) => row.createdAt >= start)
-      .reduce((sum, row) => sum + parseFloat(row.amount), 0);
-    return total.toFixed(2);
+    const sums = new Map<string, number>();
+    for (const row of rows) {
+      sums.set(
+        row.merchantId,
+        (sums.get(row.merchantId) ?? 0) + parseFloat(row.amount),
+      );
+    }
+    for (const [id, total] of sums) {
+      totals.set(id, total.toFixed(2));
+    }
+    return totals;
   }
 
   async requireActive(id: string): Promise<Merchant> {
@@ -1344,11 +1397,39 @@ export class MerchantsService implements OnModuleInit {
     const entitlements = merchant.organizationId
       ? await this.organizations.get(merchant.organizationId)
       : null;
+    const dailySpent = await this.currentDailySpent(merchant.id);
+    return this.buildView(merchant, entitlements, dailySpent);
+  }
+
+  /**
+   * List-path view: takes pre-batched org identity + spend so `list()`
+   * stays at a constant query count. The `organization` field carries the
+   * identity stub (id/type/parentId — everything list consumers read);
+   * single-record `get()` still returns the full entitlement view.
+   */
+  private toListView(
+    merchant: Merchant,
+    org:
+      | { id: string; type: string; parentId: string | null }
+      | undefined,
+    dailySpent: string,
+  ) {
+    return this.buildView(
+      merchant,
+      org ? { id: org.id, type: org.type, parentId: org.parentId } : null,
+      dailySpent,
+    );
+  }
+
+  private buildView(
+    merchant: Merchant,
+    entitlements: { id?: string; type?: string; parentId?: string | null } | null,
+    dailySpent: string,
+  ) {
     const entityType =
       entitlements?.type === 'MERCHANT'
         ? 'RETAILER'
         : (entitlements?.type ?? 'RETAILER');
-    const dailySpent = await this.currentDailySpent(merchant.id);
     const enabledServices = this.parseEnabledServices(
       merchant.enabledServicesJson,
     );

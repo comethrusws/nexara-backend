@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { BankConnector } from './entities/bank-connector.entity';
 import { OrganizationFeature } from './entities/organization-feature.entity';
@@ -123,6 +123,19 @@ export class OrganizationsService implements OnModuleInit {
 
   async get(id: string) {
     return this.toView(await this.requireOrg(id));
+  }
+
+  /**
+   * Raw organization rows for a batch of ids — ONE query, no entitlement
+   * view building. Use for list/downline rendering where only type/parent
+   * linkage is needed; `get()`/`list()` pay ~5 queries per org.
+   */
+  async rawByIds(ids: string[]): Promise<Organization[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+    return this.orgs.find({ where: { id: In(unique) } });
   }
 
   async list(filters?: { parentId?: string; type?: OrganizationType }) {
@@ -370,22 +383,36 @@ export class OrganizationsService implements OnModuleInit {
   /**
    * All organization ids below the given root (BFS, cycle-safe).
    * Used to scope downline reads and provisioning to a user's own network.
+   *
+   * Single-query: loads the id/parentId skeleton once and walks it in
+   * memory. The previous per-node `list()` paid a full entitlement view
+   * (~5 queries) per org visited — O(subtree) queries for one call.
    */
   async descendantIds(rootId: string): Promise<string[]> {
     await this.requireOrg(rootId);
+    const all = await this.orgs.find({ select: { id: true, parentId: true } });
+    const childrenByParent = new Map<string, string[]>();
+    for (const org of all) {
+      if (!org.parentId) {
+        continue;
+      }
+      const kids = childrenByParent.get(org.parentId) ?? [];
+      kids.push(org.id);
+      childrenByParent.set(org.parentId, kids);
+    }
     const result: string[] = [];
     const seen = new Set<string>([rootId]);
     const queue: string[] = [rootId];
     while (queue.length > 0) {
       const current = queue.shift() as string;
-      const kids = await this.list({ parentId: current });
+      const kids = childrenByParent.get(current) ?? [];
       for (const kid of kids) {
-        if (seen.has(kid.id)) {
+        if (seen.has(kid)) {
           continue;
         }
-        seen.add(kid.id);
-        result.push(kid.id);
-        queue.push(kid.id);
+        seen.add(kid);
+        result.push(kid);
+        queue.push(kid);
       }
     }
     return result;

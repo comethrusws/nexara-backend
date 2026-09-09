@@ -35,6 +35,7 @@ describe('MerchantsService', () => {
   const wallets = {
     openWallet: jest.fn(),
     getRequiredMapping: jest.fn(),
+    hasMappings: jest.fn(),
   };
   const audit = { record: jest.fn() };
   const storage = {
@@ -51,6 +52,7 @@ describe('MerchantsService', () => {
     ensureSeeded: jest.fn(),
     createMerchantOrganization: jest.fn(),
     get: jest.fn(),
+    rawByIds: jest.fn(),
     requireOrg: jest.fn(),
     descendantIds: jest.fn(),
     list: jest.fn(),
@@ -323,6 +325,26 @@ describe('MerchantsService', () => {
     expect(organizations.createMerchantOrganization).not.toHaveBeenCalled();
   });
 
+  it('lists merchants with batched org and spend lookups', async () => {
+    merchants.find.mockResolvedValue([
+      { ...merchant, id: 'm-a', organizationId: 'org-a' },
+      { ...merchant, id: 'm-b', organizationId: 'org-a' },
+    ]);
+    organizations.rawByIds.mockResolvedValue([
+      { id: 'org-a', type: 'DISTRIBUTOR', parentId: null },
+    ]);
+
+    const rows = await service.list({});
+
+    // One org query for the whole page — not one per merchant.
+    expect(organizations.rawByIds).toHaveBeenCalledTimes(1);
+    expect(organizations.rawByIds).toHaveBeenCalledWith(['org-a']);
+    expect(organizations.get).not.toHaveBeenCalled();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ id: 'm-a', entityType: 'DISTRIBUTOR' });
+    expect(rows[0].limitConfig).toMatchObject({ currentDailySpent: 0 });
+  });
+
   it('lists only descendant-org merchants in the downline with wallet flags', async () => {
     merchants.findOne.mockResolvedValue({ ...merchant, organizationId: 'org-sd' });
     organizations.descendantIds.mockResolvedValue(['org-dist', 'org-ret']);
@@ -334,10 +356,15 @@ describe('MerchantsService', () => {
       { id: 'org-dist', type: 'DISTRIBUTOR' },
       { id: 'org-ret', type: 'MERCHANT' },
     ]);
+    organizations.rawByIds.mockResolvedValue([
+      { id: 'org-dist', type: 'DISTRIBUTOR' },
+      { id: 'org-ret', type: 'MERCHANT' },
+    ]);
     wallets.getRequiredMapping.mockImplementation(async (id: string) => {
       if (id === 'm-dist') return { merchantId: id };
       throw new Error('no mapping');
     });
+    wallets.hasMappings.mockResolvedValue(new Set(['m-dist']));
 
     const rows = await service.getDownline('m-sd');
 
