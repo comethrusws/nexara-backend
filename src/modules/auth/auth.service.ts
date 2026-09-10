@@ -226,10 +226,30 @@ export class AuthService {
           403,
         );
       }
+      // Provisioned tier travels with the onboarding link so the form can
+      // lock store-category/role to it without a session. Tier itself stays
+      // server-side (organization record) — this is display-only.
+      const provisionedMerchant = await this.merchants.findOne({
+        where: { mobile: cleanMobile },
+        order: { createdAt: 'DESC' },
+      });
+      let entityType = 'RETAILER';
+      if (provisionedMerchant?.organizationId) {
+        const org = await this.orgs.findOne({
+          where: { id: provisionedMerchant.organizationId },
+        });
+        if (
+          org?.type === OrganizationType.SUPER_DISTRIBUTOR ||
+          org?.type === OrganizationType.DISTRIBUTOR
+        ) {
+          entityType = org.type;
+        }
+      }
       return {
         verified: true,
         mobile: cleanMobile,
         purpose: 'ONBOARDING' as const,
+        entityType,
       };
     }
 
