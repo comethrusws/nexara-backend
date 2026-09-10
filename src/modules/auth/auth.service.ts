@@ -6,8 +6,14 @@ import * as bcrypt from 'bcryptjs';
 import { IsNull, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { OtpChallenge } from './entities/otp-challenge.entity';
+import { AuthSession } from './entities/auth-session.entity';
 import { User } from './entities/user.entity';
 import { UserRole } from './auth.constants';
+import {
+  SESSION_ABSOLUTE_MS,
+  SESSION_IDLE_MS,
+  SESSION_TOUCH_MS,
+} from './auth.constants';
 import { UsersService } from './users.service';
 import { Merchant } from '../merchants/entities/merchant.entity';
 import { MerchantStatus } from '../merchants/merchant.enums';
@@ -28,6 +34,8 @@ export class AuthService {
     private readonly merchants: Repository<Merchant>,
     @InjectRepository(Organization)
     private readonly orgs: Repository<Organization>,
+    @InjectRepository(AuthSession)
+    private readonly sessions: Repository<AuthSession>,
   ) {}
 
   async login(email: string, password: string) {
@@ -298,9 +306,19 @@ export class AuthService {
     return user;
   }
 
-  private issue(user: User) {
+  private async issue(user: User) {
+    const session = await this.sessions.save(
+      this.sessions.create({
+        userId: user.id,
+        lastSeenAt: new Date(),
+        revokedAt: null,
+        ip: null,
+        userAgent: null,
+      }),
+    );
     const accessToken = this.jwt.sign({
       sub: user.id,
+      sid: session.id,
       role: user.role,
       merchantId: user.merchantId,
       organizationId: user.organizationId,
@@ -317,5 +335,58 @@ export class AuthService {
         organizationId: user.organizationId,
       },
     };
+  }
+
+  /** End one login session now — logout, disable, and admin revoke funnel here. */
+  async revokeSession(sessionId: string, userId: string): Promise<void> {
+    const session = await this.sessions.findOne({
+      where: { id: sessionId, userId },
+    });
+    if (session && !session.revokedAt) {
+      session.revokedAt = new Date();
+      await this.sessions.save(session);
+    }
+  }
+
+  /**
+   * Guard hook: throws 401 when the session is gone, revoked, idle-timed-out,
+   * or past its absolute lifetime. Touches lastSeenAt at most once per
+   * SESSION_TOUCH_MS so steady traffic costs ~1 write per 5 minutes.
+   */
+  async assertSessionActive(sessionId: string, userId: string): Promise<void> {
+    const session = await this.sessions.findOne({
+      where: { id: sessionId, userId },
+    });
+    const dead = !session || session.revokedAt;
+    if (dead) {
+      throw new NexaraError(
+        ErrorCodes.UNAUTHORIZED,
+        'Session has ended. Please sign in again.',
+        401,
+      );
+    }
+    const now = Date.now();
+    if (now - session.createdAt.getTime() > SESSION_ABSOLUTE_MS) {
+      session.revokedAt = new Date();
+      await this.sessions.save(session);
+      throw new NexaraError(
+        ErrorCodes.UNAUTHORIZED,
+        'Session expired. Please sign in again.',
+        401,
+      );
+    }
+    if (now - session.lastSeenAt.getTime() > SESSION_IDLE_MS) {
+      session.revokedAt = new Date();
+      await this.sessions.save(session);
+      throw new NexaraError(
+        ErrorCodes.UNAUTHORIZED,
+        'Session timed out due to inactivity. Please sign in again.',
+        401,
+      );
+    }
+    if (now - session.lastSeenAt.getTime() > SESSION_TOUCH_MS) {
+      session.lastSeenAt = new Date();
+      await this.sessions.save(session);
+    }
   }
 }
