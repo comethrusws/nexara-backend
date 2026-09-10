@@ -193,6 +193,16 @@ describe('MerchantsService', () => {
     expect(wallets.openWallet).not.toHaveBeenCalled();
   });
 
+  it('rejects activation with 409 (not 500) when the KYC row is missing', async () => {
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: null });
+
+    await expect(service.activate('m1')).rejects.toMatchObject({
+      code: ErrorCodes.KYC_INCOMPLETE,
+      status: 409,
+    });
+    expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
   it('updates pending onboarding profile fields and audits the change', async () => {
     merchants.findOne.mockResolvedValue({ ...merchant, kyc: { ...merchant.kyc } });
     merchants.save.mockImplementation(async (value: Merchant) => value);

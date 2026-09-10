@@ -920,22 +920,28 @@ export class MerchantsService implements OnModuleInit {
       );
     }
 
-    // Ensure merchant has actually completed onboarding before approval
+    // Ensure merchant has actually completed onboarding before approval.
+    // A missing KYC row (legacy records) means nothing was submitted — report
+    // everything as missing (409), never TypeError into a bare 500.
+    const kyc: Partial<MerchantKyc> = merchant.kyc ?? {};
     const missingOnboarding: string[] = [];
-    if (!merchant.kyc.panImagePath) {
+    if (!kyc.panImagePath) {
       missingOnboarding.push('PAN card image');
     }
-    if (!merchant.kyc.aadhaarFrontPath) {
+    if (!kyc.aadhaarFrontPath) {
       missingOnboarding.push('Aadhaar card image');
     }
-    if (!merchant.kyc.selfiePath) {
+    if (!kyc.selfiePath) {
       missingOnboarding.push('Selfie photo');
     }
-    if (!merchant.kyc.latitude || !merchant.kyc.longitude) {
+    if (!kyc.latitude || !kyc.longitude) {
       missingOnboarding.push('GPS location');
     }
-    if (!merchant.kyc.agreementSignedAt) {
+    if (!kyc.agreementSignedAt) {
       missingOnboarding.push('Merchant agreement');
+    }
+    if (!merchant.organizationId) {
+      missingOnboarding.push('Organization linkage (contact platform support)');
     }
     if (missingOnboarding.length > 0) {
       throw new NexaraError(
@@ -947,8 +953,8 @@ export class MerchantsService implements OnModuleInit {
 
     // Verify KYC documents were verified
     if (
-      merchant.kyc.aadhaarStatus !== 'VERIFIED' ||
-      merchant.kyc.panStatus !== 'VERIFIED'
+      kyc.aadhaarStatus !== 'VERIFIED' ||
+      kyc.panStatus !== 'VERIFIED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
@@ -957,8 +963,8 @@ export class MerchantsService implements OnModuleInit {
       );
     }
     if (
-      merchant.kyc.aadhaarImageMatch !== 'MATCHED' ||
-      merchant.kyc.panImageMatch !== 'MATCHED'
+      kyc.aadhaarImageMatch !== 'MATCHED' ||
+      kyc.panImageMatch !== 'MATCHED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
