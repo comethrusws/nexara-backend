@@ -50,6 +50,7 @@ describe('MerchantsService', () => {
     ensureSeeded: jest.fn(),
     createMerchantOrganization: jest.fn(),
     get: jest.fn(),
+    rawByIds: jest.fn().mockResolvedValue([]),
     list: jest.fn().mockResolvedValue([]),
     assertAncestorsActive: jest.fn(),
     assertFeature: jest.fn(),
@@ -188,6 +189,16 @@ describe('MerchantsService', () => {
 
     await expect(service.activate('m1')).rejects.toMatchObject({
       code: ErrorCodes.KYC_INCOMPLETE,
+    });
+    expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
+  it('rejects activation with 409 (not 500) when the KYC row is missing', async () => {
+    merchants.findOne.mockResolvedValue({ ...merchant, kyc: null });
+
+    await expect(service.activate('m1')).rejects.toMatchObject({
+      code: ErrorCodes.KYC_INCOMPLETE,
+      status: 409,
     });
     expect(wallets.openWallet).not.toHaveBeenCalled();
   });
@@ -426,6 +437,25 @@ describe('MerchantsService', () => {
       name: 'SD User',
     };
 
+    it('lists merchants with batched org and spend lookups', async () => {
+      merchants.find.mockResolvedValueOnce([
+        { id: 'm-a', organizationId: 'org-a', status: MerchantStatus.ACTIVE },
+        { id: 'm-b', organizationId: 'org-a', status: MerchantStatus.ACTIVE },
+      ]);
+      organizations.rawByIds.mockResolvedValueOnce([
+        { id: 'org-a', type: 'DISTRIBUTOR', parentId: null },
+      ]);
+
+      const rows = await service.list({});
+
+      // One org query for the whole page — not one per merchant.
+      expect(organizations.rawByIds).toHaveBeenCalledTimes(1);
+      expect(organizations.rawByIds).toHaveBeenCalledWith(['org-a']);
+      expect(organizations.get).not.toHaveBeenCalled();
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ id: 'm-a', entityType: 'DISTRIBUTOR' });
+    });
+
     it('rejects non-partner roles from listDownline', async () => {
       await expect(
         service.listDownline({
@@ -469,7 +499,7 @@ describe('MerchantsService', () => {
           },
         },
       ]);
-      organizations.list.mockResolvedValueOnce([
+      organizations.rawByIds.mockResolvedValueOnce([
         { id: 'org-dist', type: 'DISTRIBUTOR' },
         { id: 'org-ret', type: 'MERCHANT' },
       ]);

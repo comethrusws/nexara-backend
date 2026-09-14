@@ -32,6 +32,7 @@ export const ErrorCodes = {
   FUNDING_CHANNEL_UNAVAILABLE: 'FUNDING_CHANNEL_UNAVAILABLE',
   MPIN_INVALID: 'MPIN_INVALID',
   MPIN_NOT_SET: 'MPIN_NOT_SET',
+  ONBOARDING_REQUIRED: 'ONBOARDING_REQUIRED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

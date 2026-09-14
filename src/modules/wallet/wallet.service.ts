@@ -100,6 +100,7 @@ export class WalletService {
     merchantId: string,
     input: { amount: string; externalPaymentReference: string; notes?: string },
   ): Promise<WalletView> {
+    await this.merchants.requireActive(merchantId);
     return this.fund({
       merchantId,
       amount: input.amount,

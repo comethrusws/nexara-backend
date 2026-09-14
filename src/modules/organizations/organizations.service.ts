@@ -125,6 +125,19 @@ export class OrganizationsService implements OnModuleInit {
     return this.toView(await this.requireOrg(id));
   }
 
+  /**
+   * Raw organization rows for a batch of ids — ONE query, no entitlement
+   * view building. Use for list/downline rendering where only type/parent
+   * linkage is needed; `get()`/`list()` pay ~5 queries per org.
+   */
+  async rawByIds(ids: string[]): Promise<Organization[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+    return this.orgs.find({ where: { id: In(unique) } });
+  }
+
   async list(filters?: { parentId?: string; type?: OrganizationType }) {
     const where: Record<string, string> = {};
     if (filters?.parentId) {
@@ -354,17 +367,24 @@ export class OrganizationsService implements OnModuleInit {
 
   async resolveFeatures(organizationId: string): Promise<FeatureCode[]> {
     const chain = await this.chain(organizationId);
+    // One grants query for the whole chain instead of one per level.
+    const all = await this.grants.find({
+      where: { organizationId: In(chain.map((org) => org.id)), enabled: true },
+    });
+    const codesByOrg = new Map<string, Set<FeatureCode>>();
+    for (const row of all) {
+      const set = codesByOrg.get(row.organizationId) ?? new Set<FeatureCode>();
+      set.add(row.featureCode as FeatureCode);
+      codesByOrg.set(row.organizationId, set);
+    }
     let allowed = new Set<FeatureCode>(
       FEATURE_CATALOG.map((item) => item.code),
     );
     for (const org of chain) {
-      const own = await this.grants.find({
-        where: { organizationId: org.id, enabled: true },
-      });
-      if (own.length === 0) {
+      const ownCodes = codesByOrg.get(org.id);
+      if (!ownCodes || ownCodes.size === 0) {
         continue;
       }
-      const ownCodes = new Set(own.map((row) => row.featureCode));
       allowed = new Set(
         [...allowed].filter((code) => ownCodes.has(code)),
       );
@@ -416,6 +436,44 @@ export class OrganizationsService implements OnModuleInit {
     return this.chain(organizationId);
   }
 
+  /**
+   * All organization ids below the given root (BFS, cycle-safe).
+   * Used to scope downline reads and provisioning to a user's own network.
+   *
+   * Single-query: loads the id/parentId skeleton once and walks it in
+   * memory. The previous per-node `list()` paid a full entitlement view
+   * (~5 queries) per org visited — O(subtree) queries for one call.
+   */
+  async descendantIds(rootId: string): Promise<string[]> {
+    await this.requireOrg(rootId);
+    const all = await this.orgs.find({ select: { id: true, parentId: true } });
+    const childrenByParent = new Map<string, string[]>();
+    for (const org of all) {
+      if (!org.parentId) {
+        continue;
+      }
+      const kids = childrenByParent.get(org.parentId) ?? [];
+      kids.push(org.id);
+      childrenByParent.set(org.parentId, kids);
+    }
+    const result: string[] = [];
+    const seen = new Set<string>([rootId]);
+    const queue: string[] = [rootId];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      const kids = childrenByParent.get(current) ?? [];
+      for (const kid of kids) {
+        if (seen.has(kid)) {
+          continue;
+        }
+        seen.add(kid);
+        result.push(kid);
+        queue.push(kid);
+      }
+    }
+    return result;
+  }
+
   async assertAncestorsActive(organizationId: string): Promise<void> {
     const chain = await this.chain(organizationId);
     const blocked = chain.find(
@@ -450,24 +508,32 @@ export class OrganizationsService implements OnModuleInit {
   }
 
   private async chain(organizationId: string): Promise<Organization[]> {
-    const result: Organization[] = [];
-    let current: Organization | null = await this.requireOrg(organizationId);
+    // Single-query ancestor walk: load the id/parent skeleton once and walk
+    // it in memory instead of one findOne per level.
+    const root = await this.requireOrg(organizationId);
+    const all = await this.orgs.find({ select: { id: true, parentId: true } });
+    const byId = new Map(all.map((org) => [org.id, org.parentId ?? null]));
+    // Full rows only for the (short) ancestor path itself.
+    const pathIds: string[] = [];
     const seen = new Set<string>();
-    while (current) {
-      if (seen.has(current.id)) {
+    let currentId: string | null = organizationId;
+    while (currentId) {
+      if (seen.has(currentId)) {
         throw new NexaraError(
           ErrorCodes.INVALID_HIERARCHY,
           'Organization hierarchy contains a cycle',
           500,
         );
       }
-      seen.add(current.id);
-      result.unshift(current);
-      current = current.parentId
-        ? await this.orgs.findOne({ where: { id: current.parentId } })
-        : null;
+      seen.add(currentId);
+      pathIds.unshift(currentId);
+      currentId = byId.get(currentId) ?? null;
     }
-    return result;
+    const rows = await this.orgs.find({ where: { id: In(pathIds) } });
+    const byRowId = new Map(rows.map((org) => [org.id, org]));
+    // Preserve the root 404 semantics: requireOrg above already threw for a
+    // missing leaf; ancestors are guaranteed present via FK.
+    return pathIds.map((id) => byRowId.get(id) ?? root);
   }
 
   private assertChildAllowed(
@@ -532,7 +598,7 @@ export class OrganizationsService implements OnModuleInit {
     if (!org) {
       throw new NexaraError(
         ErrorCodes.ORGANIZATION_NOT_FOUND,
-        'Organization was not found',
+        `Organization ${id} was not found`,
         404,
       );
     }

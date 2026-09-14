@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { ErrorCodes, NexaraError } from '../../../common/errors/nexara-error';
 import { IS_PUBLIC_KEY } from '../auth.constants';
+import { AuthService } from '../auth.service';
 import { UsersService } from '../users.service';
 
 @Injectable()
@@ -17,6 +18,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly jwt: JwtService,
     private readonly reflector: Reflector,
     private readonly users: UsersService,
+    private readonly auth: AuthService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -36,8 +38,18 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string }>(token);
+      const payload = await this.jwt.verifyAsync<{ sub: string; sid?: string }>(token);
       const user = await this.users.requireActive(payload.sub);
+      // Pre-session tokens (issued before the registry) have no sid and are
+      // rejected — one re-login after deploy moves everyone onto sessions.
+      if (!payload.sid) {
+        throw new NexaraError(
+          ErrorCodes.UNAUTHORIZED,
+          'Session expired. Please sign in again.',
+          401,
+        );
+      }
+      await this.auth.assertSessionActive(payload.sid, user.id);
       (request as Request & { user: unknown }).user = {
         id: user.id,
         email: user.email,
@@ -45,6 +57,7 @@ export class JwtAuthGuard implements CanActivate {
         role: user.role,
         merchantId: user.merchantId,
         organizationId: user.organizationId,
+        sid: payload.sid,
       };
       return true;
     } catch (error) {

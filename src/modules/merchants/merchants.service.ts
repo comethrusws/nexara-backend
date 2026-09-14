@@ -1,7 +1,7 @@
 import { Inject, Injectable, OnModuleInit, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, In, Not, Repository } from 'typeorm';
+import { IsNull, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Payout, PayoutStatus } from '../payouts/entities/payout.entity';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { validateFeeSlabsJson } from '../../common/validation/fee-slabs.validator';
@@ -318,7 +318,30 @@ export class MerchantsService implements OnModuleInit {
 
   async list(filters?: { status?: string; search?: string }, caller?: AuthUser) {
     const filtered = await this.findFilteredMerchants(filters, caller);
-    return Promise.all(filtered.map((row) => this.toView(row)));
+    if (filtered.length === 0) {
+      return [];
+    }
+    // Batched: 1 org query + 1 payouts query for the whole page instead of
+    // ~2N per-row queries (org entitlement view + full payout history scan).
+    const orgIds = [
+      ...new Set(
+        filtered
+          .map((row) => row.organizationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const [orgRows, spentByMerchant] = await Promise.all([
+      this.organizations.rawByIds(orgIds),
+      this.dailySpentByMerchantIds(filtered.map((row) => row.id)),
+    ]);
+    const orgById = new Map(orgRows.map((org) => [org.id, org]));
+    return filtered.map((row) =>
+      this.toListView(
+        row,
+        orgById.get(row.organizationId ?? ''),
+        spentByMerchant.get(row.id) ?? '0.00',
+      ),
+    );
   }
 
   /**
@@ -357,7 +380,16 @@ export class MerchantsService implements OnModuleInit {
       order: { createdAt: 'DESC' },
     });
 
-    const orgs = await this.organizations.list();
+    // Batched: org types for exactly these rows (1 lightweight query, no
+    // entitlement views) + wallet presence (1 query).
+    const orgIds = [
+      ...new Set(
+        rows
+          .map((row) => row.organizationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const orgs = await this.organizations.rawByIds(orgIds);
     const orgById = new Map(orgs.map((org) => [org.id, org]));
     const walletIds = await this.wallets.findMappedMerchantIds(
       rows.map((row) => row.id),
@@ -888,22 +920,28 @@ export class MerchantsService implements OnModuleInit {
       );
     }
 
-    // Ensure merchant has actually completed onboarding before approval
+    // Ensure merchant has actually completed onboarding before approval.
+    // A missing KYC row (legacy records) means nothing was submitted — report
+    // everything as missing (409), never TypeError into a bare 500.
+    const kyc: Partial<MerchantKyc> = merchant.kyc ?? {};
     const missingOnboarding: string[] = [];
-    if (!merchant.kyc.panImagePath) {
+    if (!kyc.panImagePath) {
       missingOnboarding.push('PAN card image');
     }
-    if (!merchant.kyc.aadhaarFrontPath) {
+    if (!kyc.aadhaarFrontPath) {
       missingOnboarding.push('Aadhaar card image');
     }
-    if (!merchant.kyc.selfiePath) {
+    if (!kyc.selfiePath) {
       missingOnboarding.push('Selfie photo');
     }
-    if (!merchant.kyc.latitude || !merchant.kyc.longitude) {
+    if (!kyc.latitude || !kyc.longitude) {
       missingOnboarding.push('GPS location');
     }
-    if (!merchant.kyc.agreementSignedAt) {
+    if (!kyc.agreementSignedAt) {
       missingOnboarding.push('Merchant agreement');
+    }
+    if (!merchant.organizationId) {
+      missingOnboarding.push('Organization linkage (contact platform support)');
     }
     if (missingOnboarding.length > 0) {
       throw new NexaraError(
@@ -915,8 +953,8 @@ export class MerchantsService implements OnModuleInit {
 
     // Verify KYC documents were verified
     if (
-      merchant.kyc.aadhaarStatus !== 'VERIFIED' ||
-      merchant.kyc.panStatus !== 'VERIFIED'
+      kyc.aadhaarStatus !== 'VERIFIED' ||
+      kyc.panStatus !== 'VERIFIED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
@@ -925,8 +963,8 @@ export class MerchantsService implements OnModuleInit {
       );
     }
     if (
-      merchant.kyc.aadhaarImageMatch !== 'MATCHED' ||
-      merchant.kyc.panImageMatch !== 'MATCHED'
+      kyc.aadhaarImageMatch !== 'MATCHED' ||
+      kyc.panImageMatch !== 'MATCHED'
     ) {
       throw new NexaraError(
         ErrorCodes.KYC_INCOMPLETE,
@@ -1066,8 +1104,14 @@ export class MerchantsService implements OnModuleInit {
       selfie: merchant.kyc.selfiePath,
     };
     const result: Record<string, string | null> = {};
-    for (const [label, stored] of Object.entries(paths)) {
-      result[label] = stored ? await this.presignStoredObject(stored) : null;
+    const entries = await Promise.all(
+      Object.entries(paths).map(async ([label, stored]) => {
+        const url = stored ? await this.presignStoredObject(stored) : null;
+        return [label, url] as const;
+      }),
+    );
+    for (const [label, url] of entries) {
+      result[label] = url;
     }
     return result;
   }
@@ -1154,18 +1198,44 @@ export class MerchantsService implements OnModuleInit {
   }
 
   private async currentDailySpent(merchantId: string): Promise<string> {
+    const spent = await this.dailySpentByMerchantIds([merchantId]);
+    return spent.get(merchantId) ?? '0.00';
+  }
+
+  /**
+   * Today's settled spend for a batch of merchants — ONE query. The date
+   * and status filters run in SQL (the old per-row version loaded the full
+   * payout history and filtered in JS).
+   */
+  private async dailySpentByMerchantIds(
+    merchantIds: string[],
+  ): Promise<Map<string, string>> {
+    const totals = new Map<string, string>();
+    const unique = [...new Set(merchantIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return totals;
+    }
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     const rows = await this.payouts.find({
       where: {
-        merchantId,
+        merchantId: In(unique),
         status: Not(In([PayoutStatus.FAILED])),
+        createdAt: MoreThanOrEqual(start),
       },
+      select: { merchantId: true, amount: true },
     });
-    const total = rows
-      .filter((row) => row.createdAt >= start)
-      .reduce((sum, row) => sum + parseFloat(row.amount), 0);
-    return total.toFixed(2);
+    const sums = new Map<string, number>();
+    for (const row of rows) {
+      sums.set(
+        row.merchantId,
+        (sums.get(row.merchantId) ?? 0) + parseFloat(row.amount),
+      );
+    }
+    for (const [id, total] of sums) {
+      totals.set(id, total.toFixed(2));
+    }
+    return totals;
   }
 
   async requireActive(id: string): Promise<Merchant> {
@@ -1828,14 +1898,46 @@ export class MerchantsService implements OnModuleInit {
   }
 
   private async toView(merchant: Merchant) {
-    const entitlements = merchant.organizationId
-      ? await this.organizations.get(merchant.organizationId)
-      : null;
+    const [entitlements, dailySpent] = await Promise.all([
+      merchant.organizationId
+        ? this.organizations.get(merchant.organizationId)
+        : Promise.resolve(null),
+      this.currentDailySpent(merchant.id),
+    ]);
+    return this.buildView(merchant, entitlements, dailySpent);
+  }
+
+  /**
+   * List-path view: takes pre-batched org identity + spend so `list()`
+   * stays at a constant query count. The `organization` field carries the
+   * identity stub (id/type/parentId — everything list consumers read);
+   * single-record `get()` still returns the full entitlement view.
+   */
+  private toListView(
+    merchant: Merchant,
+    org: { id: string; type: string; parentId: string | null } | undefined,
+    dailySpent: string,
+  ) {
+    return this.buildView(
+      merchant,
+      org ? { id: org.id, type: org.type, parentId: org.parentId } : null,
+      dailySpent,
+    );
+  }
+
+  private buildView(
+    merchant: Merchant,
+    entitlements: {
+      id?: string;
+      type?: string;
+      parentId?: string | null;
+    } | null,
+    dailySpent: string,
+  ) {
     const entityType =
       entitlements?.type === 'MERCHANT'
         ? 'RETAILER'
         : (entitlements?.type ?? 'RETAILER');
-    const dailySpent = await this.currentDailySpent(merchant.id);
     const enabledServices = this.parseEnabledServices(
       merchant.enabledServicesJson,
     );

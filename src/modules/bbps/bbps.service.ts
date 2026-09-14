@@ -66,7 +66,8 @@ export class BbpsService {
     const convFee = bill.convFee.toFixed(2);
     const totalPaid = addAmounts(billAmount, convFee);
 
-    const mapping = await this.wallets.getRequiredMapping(merchant.id);
+    // getWallet resolves (and requires) the mapping internally — a separate
+    // getRequiredMapping call here just paid the same lookup twice.
     const balances = await this.wallets.getWallet(merchant.id);
     if (
       parseNonNegativeAmount(balances.balances.available) <
@@ -99,7 +100,6 @@ export class BbpsService {
       }),
     );
 
-    void mapping;
     return this.toView(saved);
   }
 

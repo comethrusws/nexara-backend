@@ -425,6 +425,13 @@ export class UsersService implements OnModuleInit {
   ): Promise<void> {
     const existing = await this.findByEmail(email);
     if (existing) {
+      // Repair stale rows seeded before staff roles existed: platform staff
+      // emails must always carry their staff role, otherwise every
+      // role-guarded endpoint rejects them after login.
+      if (existing.role !== role) {
+        existing.role = role;
+        await this.users.save(existing);
+      }
       return;
     }
     await this.users.save(

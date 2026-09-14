@@ -397,7 +397,6 @@ export class OnboardingExtrasDto {
   agreementAccepted?: boolean;
 }
 
-/** Authenticated merchant corrections while KYC is still pending. */
 /** Partner (SD/Dist) provision of a child mobile under their network. */
 export class ProvisionDownlineDto {
   @ApiProperty({ example: '9876543210' })
