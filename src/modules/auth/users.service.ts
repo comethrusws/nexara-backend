@@ -249,6 +249,42 @@ export class UsersService implements OnModuleInit {
     return { success: true, reset: true };
   }
 
+  async verifyPan(
+    userId: string,
+    pan: string,
+    merchantPan?: string | null,
+  ) {
+    const user = await this.requireActive(userId);
+    if (!isMerchantTierUser(user.role)) {
+      throw new NexaraError(
+        ErrorCodes.FORBIDDEN,
+        'Only merchant accounts can verify a PAN',
+        403,
+      );
+    }
+    const cleanInputPan = pan.toUpperCase().trim();
+    if (!merchantPan || merchantPan.trim().length === 0) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'No PAN is registered for this merchant account',
+        400,
+      );
+    }
+    const cleanMerchantPan = merchantPan.toUpperCase().trim();
+    const match =
+      cleanInputPan === cleanMerchantPan ||
+      cleanMerchantPan.includes(cleanInputPan) ||
+      cleanInputPan.includes(cleanMerchantPan);
+    if (!match) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'PAN number does not match registered merchant records',
+        400,
+      );
+    }
+    return { success: true, verified: true };
+  }
+
   async resetMpinWithPan(
     userId: string,
     pan: string,
