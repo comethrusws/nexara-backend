@@ -76,14 +76,15 @@ export class AuthService {
       },
       order: { consumedAt: 'DESC' },
     });
-    if (!row) {
+    const verifiedAt = row?.consumedAt;
+    if (!verifiedAt) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
         'Please verify your registered mobile number with OTP before completing onboarding',
         400,
       );
     }
-    if (Date.now() - row.consumedAt.getTime() > windowMs) {
+    if (Date.now() - verifiedAt.getTime() > windowMs) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
         'OTP verification expired. Please verify your mobile number again.',
