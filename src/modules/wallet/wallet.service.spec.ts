@@ -20,6 +20,7 @@ describe('WalletService', () => {
     openMerchantWallet: jest.fn(),
     getBalances: jest.fn(),
     creditWallet: jest.fn(),
+    getStatement: jest.fn(),
   };
   const merchants = {
     requireActive: jest.fn(),
@@ -104,6 +105,42 @@ describe('WalletService', () => {
       code: ErrorCodes.WALLET_NOT_FOUND,
       status: 404,
     });
+  });
+
+  it('returns activity with numeric amounts (not money strings)', async () => {
+    mappings.findOne.mockResolvedValue({
+      merchantId: 'm1',
+      fineractClientId: 10,
+      fineractSavingsAccountId: 20,
+    });
+    fineract.getStatement.mockResolvedValue([
+      {
+        transactionId: 1,
+        date: '2026-09-16',
+        amount: '1500.00',
+        type: 'CREDIT',
+        reversed: false,
+        receiptNumber: 'ref-1',
+        note: 'Wallet Credit',
+        runningBalance: '5500.00',
+      },
+      {
+        transactionId: 2,
+        date: '2026-09-16',
+        amount: '500.00',
+        type: 'DEBIT',
+        reversed: false,
+        receiptNumber: 'ref-2',
+        note: 'Payout Debit',
+      },
+    ]);
+
+    const activity = await service.getActivity('m1');
+
+    expect(activity[0]).toMatchObject({ amount: 1500, runningBalance: 5500 });
+    expect(activity[1]).toMatchObject({ amount: 500, runningBalance: 0 });
+    expect(typeof activity[0].amount).toBe('number');
+    expect(typeof activity[0].runningBalance).toBe('number');
   });
 
   it('rejects funding when merchant is not ACTIVE', async () => {
