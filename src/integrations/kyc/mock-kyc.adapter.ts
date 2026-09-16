@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
+import { maskAadhaar, maskPan } from './kyc.masking';
 import {
   KycPort,
   KycVerificationResult,
@@ -11,13 +12,7 @@ import {
 const AADHAAR_PATTERN = /^\d{12}$/;
 const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 
-export function maskAadhaar(aadhaarNumber: string): string {
-  return `XXXXXXXX${aadhaarNumber.slice(-4)}`;
-}
-
-export function maskPan(pan: string): string {
-  return `${pan.slice(0, 5)}***${pan.slice(-2)}`;
-}
+export { maskAadhaar, maskPan } from './kyc.masking';
 
 @Injectable()
 export class MockKycAdapter implements KycPort {

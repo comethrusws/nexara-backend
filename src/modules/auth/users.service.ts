@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { IsNull, Repository } from 'typeorm';
 import { MPIN_PATTERN, MPIN_VALIDATION_MESSAGE } from '../../common/dto/mpin';
+import { maskPan } from '../../integrations/kyc/kyc.masking';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { UserRole } from './auth.constants';
 import { OtpChallenge } from './entities/otp-challenge.entity';
@@ -273,10 +274,10 @@ export class UsersService implements OnModuleInit {
     const cleanInputPan = pan.toUpperCase().trim();
     if (merchantPan && merchantPan.trim().length > 0) {
       const cleanMerchantPan = merchantPan.toUpperCase().trim();
+      const maskedInputPan = maskPan(cleanInputPan);
       const match =
         cleanInputPan === cleanMerchantPan ||
-        cleanMerchantPan.includes(cleanInputPan) ||
-        cleanInputPan.includes(cleanMerchantPan);
+        maskedInputPan === cleanMerchantPan;
       if (!match) {
         throw new NexaraError(
           ErrorCodes.INVALID_REQUEST,
