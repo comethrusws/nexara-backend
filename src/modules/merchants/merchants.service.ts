@@ -193,6 +193,29 @@ export class MerchantsService implements OnModuleInit {
       }
     }
 
+    const mobile = input.mobile.replace(/\D/g, '').slice(-10);
+
+    const existingMerchant = await this.merchants.findOne({
+      where: { mobile },
+      order: { createdAt: 'DESC' },
+    });
+    if (existingMerchant) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already provisioned. Please use a different number.',
+        409,
+      );
+    }
+
+    const existingUser = await this.users.findByMobile(mobile);
+    if (existingUser) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is already registered to a user. Please use a different number.',
+        409,
+      );
+    }
+
     const parentId =
       input.parentOrganizationId && input.parentOrganizationId.trim()
         ? input.parentOrganizationId

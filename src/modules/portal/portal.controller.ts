@@ -40,6 +40,7 @@ import {
   ResetMpinDto,
   ResetMpinWithPanDto,
   SetMpinDto,
+  VerifyPanDto,
 } from './dto/portal.dto';
 
 @Controller('me')
@@ -261,6 +262,20 @@ export class PortalController {
   })
   resetMpin(@CurrentUser() user: AuthUser, @Body() body: ResetMpinDto) {
     return this.users.resetMpinWithOtp(user.id, body.code, body.mpin);
+  }
+
+  @Post('mpin/verify-pan')
+  @ApiOperation({
+    summary: 'Verify PAN matches registered merchant records before MPIN reset',
+  })
+  async verifyPan(
+    @CurrentUser() user: AuthUser,
+    @Body() body: VerifyPanDto,
+  ) {
+    const merchantId = this.merchantId(user);
+    const merchant = await this.merchants.get(merchantId);
+    const registeredPan = merchant.kyc?.panMasked || null;
+    return this.users.verifyPan(user.id, body.pan, registeredPan);
   }
 
   @Post('mpin/reset-with-pan')

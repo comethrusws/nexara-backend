@@ -238,6 +238,15 @@ export class BbpsPayDto {
   mpin: string;
 }
 
+export class VerifyPanDto {
+  @ApiProperty({ example: 'ABCDE1234F' })
+  @IsString()
+  @Matches(/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/, {
+    message: 'pan must be 10 characters formatted like ABCDE1234F',
+  })
+  pan: string;
+}
+
 export class ResetMpinWithPanDto {
   @ApiProperty({ example: 'ABCDE1234F' })
   @IsString()

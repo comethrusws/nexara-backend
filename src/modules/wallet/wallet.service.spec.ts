@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { ErrorCodes } from '../../common/errors/nexara-error';
 import { FINERACT_PORT } from '../../integrations/fineract/fineract.types';
 import { MerchantsService } from '../merchants/merchants.service';
+import { Payout } from '../payouts/entities/payout.entity';
 import {
   FundingChannel,
   WalletFunding,
@@ -41,6 +42,12 @@ describe('WalletService', () => {
             findOne: jest.fn().mockResolvedValue(null),
             save: jest.fn(),
             create: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(Payout),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
           },
         },
         { provide: FINERACT_PORT, useValue: fineract },
