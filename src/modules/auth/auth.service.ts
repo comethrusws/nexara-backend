@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { AuthSession } from './entities/auth-session.entity';
@@ -67,11 +67,19 @@ export class AuthService {
   /** Requires a consumed ONBOARDING OTP for this mobile (signup verification). */
   async assertRecentOnboardingOtp(mobile: string): Promise<void> {
     const cleanMobile = this.normalizeMobile(mobile);
-    const windowMs = 30 * 60 * 1000;
+    // 24h window: OTP is verified at signup (step 0) but E-Sign submit happens
+    // after the 4-step KYC flow (entity details, Digilocker, selfie, agreement)
+    // which routinely takes longer than 30 minutes.
+    const windowMs = 24 * 60 * 60 * 1000;
+    // Only consider consumed OTPs. Ordering by consumedAt DESC without a
+    // Not(IsNull()) filter lets Postgres return an unconsumed row first
+    // (DESC defaults to NULLS FIRST), falsely rejecting users who already
+    // verified (e.g. after an OTP resend / double request leaves a pending row).
     const row = await this.otps.findOne({
       where: {
         mobile: cleanMobile,
         purpose: 'ONBOARDING',
+        consumedAt: Not(IsNull()),
       },
       order: { consumedAt: 'DESC' },
     });
