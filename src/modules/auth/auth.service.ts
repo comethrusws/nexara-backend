@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { ErrorCodes, NexaraError } from '../../common/errors/nexara-error';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { AuthSession } from './entities/auth-session.entity';
@@ -72,10 +72,11 @@ export class AuthService {
       where: {
         mobile: cleanMobile,
         purpose: 'ONBOARDING',
+        consumedAt: Not(IsNull()),
       },
       order: { consumedAt: 'DESC' },
     });
-    if (!row?.consumedAt) {
+    if (!row) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
         'Please verify your registered mobile number with OTP before completing onboarding',
