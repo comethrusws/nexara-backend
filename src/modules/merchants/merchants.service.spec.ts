@@ -427,6 +427,58 @@ describe('MerchantsService', () => {
     });
   });
 
+  describe('create mobile duplication guard', () => {
+    it('rejects create when mobile is already provisioned', async () => {
+      merchants.findOne.mockResolvedValueOnce({
+        id: 'existing-merchant',
+        mobile: '9876543210',
+      });
+
+      await expect(
+        service.create(
+          { mobile: '9876543210', entityType: 'DISTRIBUTOR' } as any,
+          {
+            id: 'u-admin',
+            role: 'ADMIN' as any,
+            merchantId: null,
+            organizationId: 'org-admin',
+            email: 'admin@nexara.com',
+            name: 'Admin',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.INVALID_REQUEST,
+        status: 409,
+      });
+    });
+
+    it('rejects create when mobile belongs to an existing user', async () => {
+      merchants.findOne.mockResolvedValueOnce(null);
+      users.findByMobile.mockResolvedValueOnce({
+        id: 'user-1',
+        mobile: '9876543210',
+        status: 'ACTIVE',
+      });
+
+      await expect(
+        service.create(
+          { mobile: '9876543210', entityType: 'DISTRIBUTOR' } as any,
+          {
+            id: 'u-admin',
+            role: 'ADMIN' as any,
+            merchantId: null,
+            organizationId: 'org-admin',
+            email: 'admin@nexara.com',
+            name: 'Admin',
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.INVALID_REQUEST,
+        status: 409,
+      });
+    });
+  });
+
   describe('listDownline & provisionDownline', () => {
     const sdCaller = {
       id: 'u-sd',
