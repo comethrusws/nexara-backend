@@ -244,6 +244,14 @@ export class WalletService {
     }
     const note = line.note ?? '';
     const payoutMatch = /Payout\s+([A-Za-z0-9_-]+)/i.exec(note);
+    // StatementLine amounts are decimal strings by backend money convention —
+    // coerce to numbers here so API consumers (frontend Transaction type)
+    // receive numerics instead of rendering ₹0 fallbacks.
+    const amount = Number(line.amount);
+    const runningBalance =
+      line.runningBalance !== undefined && line.runningBalance !== null
+        ? Number(line.runningBalance)
+        : 0;
     return {
       id: String(line.transactionId),
       merchantId,
@@ -252,8 +260,8 @@ export class WalletService {
       description: note || line.type,
       reference: line.receiptNumber ?? String(line.transactionId),
       type,
-      amount: line.amount,
-      runningBalance: line.runningBalance ?? null,
+      amount: Number.isFinite(amount) ? amount : 0,
+      runningBalance: Number.isFinite(runningBalance) ? runningBalance : 0,
       status,
     };
   }
