@@ -9,6 +9,7 @@ import {
   WalletBalances,
 } from '../../integrations/fineract/fineract.types';
 import { MerchantsService } from '../merchants/merchants.service';
+import { Payout } from '../payouts/entities/payout.entity';
 import {
   FundingChannel,
   FundingStatus,
@@ -31,6 +32,8 @@ export class WalletService {
     private readonly mappings: Repository<WalletMapping>,
     @InjectRepository(WalletFunding)
     private readonly fundings: Repository<WalletFunding>,
+    @InjectRepository(Payout)
+    private readonly payouts: Repository<Payout>,
     @Inject(FINERACT_PORT)
     private readonly fineract: FineractPort,
     @Inject(forwardRef(() => MerchantsService))
@@ -167,7 +170,27 @@ export class WalletService {
 
   async getActivity(merchantId: string) {
     const lines = await this.getStatement(merchantId);
-    return lines.map((line) => this.toActivity(merchantId, line));
+    const activities = lines.map((line) => this.toActivity(merchantId, line));
+
+    // Batch-lookup beneficiary names for payout debits so the frontend can
+    // display "who the money was transferred to" instead of a raw reference.
+    const payoutIds = activities
+      .map((a) => a.payoutId)
+      .filter((id): id is string => Boolean(id));
+    if (payoutIds.length > 0) {
+      const payouts = await this.payouts.find({
+        where: payoutIds.map((id) => ({ id })),
+        select: { id: true, beneficiaryName: true },
+      });
+      const nameMap = new Map(payouts.map((p) => [p.id, p.beneficiaryName]));
+      for (const activity of activities) {
+        if (activity.payoutId) {
+          activity.beneficiaryName = nameMap.get(activity.payoutId) ?? null;
+        }
+      }
+    }
+
+    return activities;
   }
 
   async getStatement(
@@ -263,6 +286,7 @@ export class WalletService {
       amount: Number.isFinite(amount) ? amount : 0,
       runningBalance: Number.isFinite(runningBalance) ? runningBalance : 0,
       status,
+      beneficiaryName: null as string | null,
     };
   }
 }
