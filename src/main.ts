@@ -31,7 +31,9 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      // Temporary: allow extra client fields (e.g. purpose on beneficiary OTP)
+      // until the frontend deploy that removes them is live. Re-enable after.
+      forbidNonWhitelisted: false,
       transform: true,
     }),
   );
