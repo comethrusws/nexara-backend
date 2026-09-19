@@ -5,7 +5,7 @@
 | Status | **DRAFT — for feasibility review. No implementation approved yet.** |
 | Date | 2026-09-19 |
 | Scope | `nexara-frontend` onboarding Step 4 + `nexara-backend` onboarding/KYC APIs + Ops KYC review |
-| Author | Engineering (Muse Spark) |
+| Author | Engineering (RUNE) |
 
 ## 1. Problem statement
 
