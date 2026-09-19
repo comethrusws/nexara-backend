@@ -31,6 +31,11 @@ import {
 } from './dto/merchant.dto';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
+import {
+  CURRENT_AGREEMENT_VERSION,
+  getAgreementByVersion,
+  getCurrentAgreementSha256,
+} from './agreement/agreement-text';
 import { FeeType, MerchantStatus, MerchantTier } from './merchant.enums';
 
 @Injectable()
@@ -524,11 +529,19 @@ export class MerchantsService implements OnModuleInit {
         latitude: merchant.kyc?.latitude ?? null,
         longitude: merchant.kyc?.longitude ?? null,
         agreementSignedAt: merchant.kyc?.agreementSignedAt ?? null,
+        agreementVersion: merchant.kyc?.agreementVersion ?? null,
+        agreementSha256: merchant.kyc?.agreementSha256 ?? null,
+        agreementHashMatchesCurrent:
+          merchant.kyc?.agreementSha256 != null &&
+          merchant.kyc.agreementSha256 === getCurrentAgreementSha256(),
+        signatureMethod: merchant.kyc?.signatureMethod ?? null,
+        signedAt: merchant.kyc?.signedAt ?? null,
         images: {
           aadhaarFront: images.aadhaarFront,
           aadhaarBack: images.aadhaarBack,
           pan: images.pan,
           selfie: images.selfie,
+          signedCopy: (images as Record<string, string | null>).signedCopy ?? null,
         },
       },
     };
@@ -960,8 +973,8 @@ export class MerchantsService implements OnModuleInit {
     if (!kyc.latitude || !kyc.longitude) {
       missingOnboarding.push('GPS location');
     }
-    if (!kyc.agreementSignedAt) {
-      missingOnboarding.push('Merchant agreement');
+    if (!kyc.agreementSignedAt || !kyc.signedCopyPath) {
+      missingOnboarding.push('Merchant agreement (signed copy missing)');
     }
     if (!merchant.organizationId) {
       missingOnboarding.push('Organization linkage (contact platform support)');
@@ -1125,6 +1138,7 @@ export class MerchantsService implements OnModuleInit {
       aadhaarBack: merchant.kyc.aadhaarBackPath,
       pan: merchant.kyc.panImagePath,
       selfie: merchant.kyc.selfiePath,
+      signedCopy: merchant.kyc.signedCopyPath,
     };
     const result: Record<string, string | null> = {};
     const entries = await Promise.all(
@@ -1460,7 +1474,31 @@ export class MerchantsService implements OnModuleInit {
       refreshed.kyc.shopType = input.shopType;
     }
     if (input.agreementAccepted) {
+      const method = input.signatureMethod ?? 'PAPER_UPLOAD';
+      if (method !== 'PAPER_UPLOAD') {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          'Digital e-sign is not available yet. Please download, sign, and upload the agreement instead.',
+          422,
+        );
+      }
+      // Old clients may omit the version; the baked-in text they show equals
+      // the current canonical text, so stamping current stays accurate.
+      // An explicitly stale version fails closed (422) per the e-sign PRD.
+      const version = input.agreementVersion ?? CURRENT_AGREEMENT_VERSION;
+      const record = getAgreementByVersion(version);
+      if (!record || version !== CURRENT_AGREEMENT_VERSION) {
+        throw new NexaraError(
+          ErrorCodes.INVALID_REQUEST,
+          `Agreement version ${version} is no longer current. Please refresh and sign version ${CURRENT_AGREEMENT_VERSION}.`,
+          422,
+        );
+      }
       refreshed.kyc.agreementSignedAt = new Date();
+      refreshed.kyc.signedAt = new Date();
+      refreshed.kyc.agreementVersion = record.version;
+      refreshed.kyc.agreementSha256 = record.sha256;
+      refreshed.kyc.signatureMethod = method;
     }
 
     if (this.looksLikeImagePayload(input.selfieBase64)) {
@@ -1494,6 +1532,11 @@ export class MerchantsService implements OnModuleInit {
       aadhaarBack?: { originalname: string; buffer: Buffer; mimetype?: string };
       pan?: { originalname: string; buffer: Buffer; mimetype?: string };
       selfie?: { originalname: string; buffer: Buffer; mimetype?: string };
+      signedAgreement?: {
+        originalname: string;
+        buffer: Buffer;
+        mimetype?: string;
+      };
     },
   ) {
     const merchant = await this.requireMerchant(id);
@@ -1533,6 +1576,21 @@ export class MerchantsService implements OnModuleInit {
     }
     if (files.selfie) {
       merchant.kyc.selfiePath = await save(files.selfie, 'selfie');
+    }
+    if (files.signedAgreement) {
+      this.assertSignedAgreementFile(files.signedAgreement);
+      const ext = files.signedAgreement.originalname.includes('.')
+        ? files.signedAgreement.originalname.slice(
+            files.signedAgreement.originalname.lastIndexOf('.'),
+          )
+        : '.bin';
+      const stored = await this.storage.putObject({
+        key: `kyc/${merchant.id}/agreement/signed-copy${ext}`,
+        body: files.signedAgreement.buffer,
+        contentType:
+          files.signedAgreement.mimetype ?? 'application/octet-stream',
+      });
+      merchant.kyc.signedCopyPath = stored.url;
     }
     await this.refreshDocumentMatch(merchant);
     await this.applyMockDocumentMatchIfReady(merchant);
@@ -1778,6 +1836,38 @@ export class MerchantsService implements OnModuleInit {
     return { buffer, contentType, extension };
   }
 
+  private assertSignedAgreementFile(file: {
+    originalname: string;
+    buffer: Buffer;
+    mimetype?: string;
+  }): void {
+    const allowed = new Set([
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+    ]);
+    const mimetype = (file.mimetype ?? '').toLowerCase();
+    if (!allowed.has(mimetype)) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Signed agreement must be a PDF, JPEG, PNG, or WebP file',
+        400,
+      );
+    }
+    const maxBytes =
+      mimetype === 'application/pdf' ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (!file.buffer?.length || file.buffer.length > maxBytes) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        mimetype === 'application/pdf'
+          ? 'Signed agreement PDF must be 10 MB or smaller'
+          : 'Signed agreement image must be 5 MB or smaller',
+        400,
+      );
+    }
+  }
+
   private requireOrganizationId(merchant: Merchant): string {
     if (!merchant.organizationId) {
       throw new NexaraError(
@@ -1905,6 +1995,15 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
+  /** Latest provisioned record for a mobile (used for agreement PDF prefill). */
+  async findLatestByMobile(mobile: string) {
+    const digits = mobile.replace(/\D/g, '').slice(-10);
+    return this.merchants.findOne({
+      where: { mobile: digits },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
   private async requireMerchant(id: string): Promise<Merchant> {
     const merchant = await this.merchants.findOne({
       where: { id },
@@ -2019,6 +2118,10 @@ export class MerchantsService implements OnModuleInit {
             hasPanImage: Boolean(merchant.kyc.panImagePath),
             hasSelfie: Boolean(merchant.kyc.selfiePath),
             agreementSignedAt: merchant.kyc.agreementSignedAt,
+            agreementVersion: merchant.kyc.agreementVersion ?? null,
+            signatureMethod: merchant.kyc.signatureMethod ?? null,
+            hasSignedCopy: Boolean(merchant.kyc.signedCopyPath),
+            signedAt: merchant.kyc.signedAt ?? null,
           }
         : null,
     };

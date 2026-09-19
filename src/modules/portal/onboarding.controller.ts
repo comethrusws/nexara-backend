@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Header, Post, Query } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ApiOperation,
@@ -12,6 +12,7 @@ import { AuthService } from '../auth/auth.service';
 import { Public } from '../auth/decorators/public.decorator';
 import { UsersService } from '../auth/users.service';
 import { PublicOnboardingDto } from '../merchants/dto/merchant.dto';
+import { AgreementService } from '../merchants/agreement/agreement.service';
 import { MerchantsService } from '../merchants/merchants.service';
 
 @Public()
@@ -23,7 +24,56 @@ export class OnboardingController {
     private readonly auth: AuthService,
     private readonly users: UsersService,
     private readonly config: ConfigService,
+    private readonly agreement: AgreementService,
   ) {}
+
+  @Get('agreement')
+  @ApiOperation({
+    summary: 'Current Merchant Services Agreement',
+    description:
+      'Returns the current versioned agreement text shown in onboarding Step 4. Public so the pre-login onboarding page can render it.',
+  })
+  @ApiResponse({ status: 200, description: 'Current agreement record' })
+  getAgreement() {
+    return this.agreement.getCurrent();
+  }
+
+  @Get('agreement.pdf')
+  @ApiOperation({
+    summary: 'Personalized agreement PDF for wet signing',
+    description:
+      'Generates the current agreement pre-filled with the provisioned merchant details plus a deterministic document reference. Print, sign by hand, and upload the scan in onboarding Step 4.',
+  })
+  @ApiResponse({ status: 200, description: 'Agreement PDF bytes' })
+  @Header('Content-Type', 'application/pdf')
+  async getAgreementPdf(@Query('mobile') mobile?: string) {
+    const digits = String(mobile ?? '')
+      .replace(/\D/g, '')
+      .slice(-10);
+    if (!digits) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Query parameter mobile is required',
+        400,
+      );
+    }
+    const merchant = await this.merchants.findLatestByMobile(digits);
+    if (!merchant) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'This mobile number is not provisioned. Please contact your administrator.',
+        404,
+      );
+    }
+    const pdf = await this.agreement.renderPdf({
+      merchantId: merchant.id,
+      businessName: merchant.businessName,
+      tradeName: (merchant as { tradeName?: string }).tradeName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+    });
+    return pdf;
+  }
 
   @Post()
   @ApiOperation({
@@ -114,6 +164,12 @@ export class OnboardingController {
       shopType: raw.shopType ? String(raw.shopType) : undefined,
       agreementAccepted:
         raw.agreementAccepted === true || raw.agreementAccepted === 'true',
+      agreementVersion: raw.agreementVersion
+        ? String(raw.agreementVersion)
+        : undefined,
+      signatureMethod: raw.signatureMethod
+        ? String(raw.signatureMethod)
+        : undefined,
       selfieBase64: raw.selfieBase64
         ? String(raw.selfieBase64)
         : raw.selfie

@@ -11,6 +11,7 @@ import { Payout } from '../payouts/entities/payout.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
+import { AgreementService } from './agreement/agreement.service';
 import { MerchantsController } from './merchants.controller';
 import { MerchantsService } from './merchants.service';
 
@@ -27,7 +28,7 @@ import { MerchantsService } from './merchants.service';
     FeeEngineModule,
   ],
   controllers: [MerchantsController],
-  providers: [MerchantsService],
-  exports: [MerchantsService],
+  providers: [MerchantsService, AgreementService],
+  exports: [MerchantsService, AgreementService],
 })
 export class MerchantsModule {}

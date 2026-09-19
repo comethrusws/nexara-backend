@@ -249,6 +249,28 @@ export class PublicOnboardingDto {
   @IsBoolean()
   agreementAccepted?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'Agreement version the merchant executed (e.g. 2026.1). Must match the current published version.',
+    example: '2026.1',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}\.\d+$/, { message: 'agreementVersion must look like 2026.1' })
+  agreementVersion?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'How the agreement was executed. PAPER_UPLOAD in Phase 1; DIGITAL_ESIGN reserved for Phase 2.',
+    example: 'PAPER_UPLOAD',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(PAPER_UPLOAD|DIGITAL_ESIGN)$/, {
+    message: 'signatureMethod must be PAPER_UPLOAD or DIGITAL_ESIGN',
+  })
+  signatureMethod?: string;
+
   /** Optional data-URL or raw base64 selfie for S3 storage */
   @IsOptional()
   @IsString()

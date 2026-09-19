@@ -105,6 +105,21 @@ export class MerchantKyc {
   @Column({ name: 'agreement_signed_at', type: 'timestamptz', nullable: true })
   agreementSignedAt: Date | null;
 
+  @Column({ name: 'agreement_version', type: 'varchar', length: 16, nullable: true })
+  agreementVersion: string | null;
+
+  @Column({ name: 'agreement_sha256', type: 'varchar', length: 64, nullable: true })
+  agreementSha256: string | null;
+
+  @Column({ name: 'signature_method', type: 'varchar', length: 16, nullable: true })
+  signatureMethod: string | null;
+
+  @Column({ name: 'signed_copy_path', type: 'varchar', length: 500, nullable: true })
+  signedCopyPath: string | null;
+
+  @Column({ name: 'signed_at', type: 'timestamptz', nullable: true })
+  signedAt: Date | null;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }

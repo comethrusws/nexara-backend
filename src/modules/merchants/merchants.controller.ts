@@ -144,6 +144,7 @@ export class MerchantsController {
         aadhaarBack: { type: 'string', format: 'binary' },
         pan: { type: 'string', format: 'binary' },
         selfie: { type: 'string', format: 'binary' },
+        signedAgreement: { type: 'string', format: 'binary' },
       },
     },
   })
@@ -154,6 +155,7 @@ export class MerchantsController {
         { name: 'aadhaarBack', maxCount: 1 },
         { name: 'pan', maxCount: 1 },
         { name: 'selfie', maxCount: 1 },
+        { name: 'signedAgreement', maxCount: 1 },
       ],
       { storage: memoryStorage() },
     ),
@@ -166,6 +168,7 @@ export class MerchantsController {
       aadhaarBack?: Express.Multer.File[];
       pan?: Express.Multer.File[];
       selfie?: Express.Multer.File[];
+      signedAgreement?: Express.Multer.File[];
     },
   ) {
     return this.merchants.storeKycFiles(id, {
@@ -173,6 +176,7 @@ export class MerchantsController {
       aadhaarBack: files?.aadhaarBack?.[0],
       pan: files?.pan?.[0],
       selfie: files?.selfie?.[0],
+      signedAgreement: files?.signedAgreement?.[0],
     });
   }
 

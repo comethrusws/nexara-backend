@@ -202,7 +202,7 @@ export class PortalController {
   @ApiOperation({
     summary: 'Upload KYC identity documents',
     description:
-      'Merchant uploads PAN, Aadhaar (front/back), and optional selfie images during onboarding or KYC updates.',
+      'Merchant uploads PAN, Aadhaar (front/back), optional selfie images, and the signed agreement copy during onboarding or KYC updates.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -213,6 +213,7 @@ export class PortalController {
         aadhaarBack: { type: 'string', format: 'binary' },
         pan: { type: 'string', format: 'binary' },
         selfie: { type: 'string', format: 'binary' },
+        signedAgreement: { type: 'string', format: 'binary' },
       },
     },
   })
@@ -223,6 +224,7 @@ export class PortalController {
         { name: 'aadhaarBack', maxCount: 1 },
         { name: 'pan', maxCount: 1 },
         { name: 'selfie', maxCount: 1 },
+        { name: 'signedAgreement', maxCount: 1 },
       ],
       { storage: memoryStorage() },
     ),
@@ -235,6 +237,7 @@ export class PortalController {
       aadhaarBack?: Express.Multer.File[];
       pan?: Express.Multer.File[];
       selfie?: Express.Multer.File[];
+      signedAgreement?: Express.Multer.File[];
     },
   ) {
     return this.merchants.storeKycFiles(this.merchantId(user), {
@@ -242,7 +245,28 @@ export class PortalController {
       aadhaarBack: files?.aadhaarBack?.[0],
       pan: files?.pan?.[0],
       selfie: files?.selfie?.[0],
+      signedAgreement: files?.signedAgreement?.[0],
     });
+  }
+
+  @Get('kyc/signed-copy')
+  @ApiOperation({
+    summary: "Merchant's own executed agreement copy",
+    description:
+      'Returns a short-lived view URL for the signed agreement the caller uploaded during onboarding.',
+  })
+  async signedCopy(@CurrentUser() user: AuthUser) {
+    const urls = await this.merchants.getKycPresignedUrls(
+      this.merchantId(user),
+    );
+    if (!urls.signedCopy) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'No signed agreement copy is on file for this merchant',
+        404,
+      );
+    }
+    return { url: urls.signedCopy };
   }
 
   @Post('mpin/reset/request')

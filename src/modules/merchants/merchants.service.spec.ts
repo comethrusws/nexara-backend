@@ -16,6 +16,7 @@ import { Merchant } from './entities/merchant.entity';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { MerchantStatus } from './merchant.enums';
 import { MerchantsService } from './merchants.service';
+import { getCurrentAgreement } from './agreement/agreement-text';
 
 describe('MerchantsService', () => {
   const merchants = {
@@ -103,6 +104,11 @@ describe('MerchantsService', () => {
       latitude: '28.6139',
       longitude: '77.2090',
       agreementSignedAt: new Date(),
+      agreementVersion: '2026.1',
+      agreementSha256: 'deadbeef',
+      signatureMethod: 'PAPER_UPLOAD',
+      signedCopyPath: 's3://test/kyc/m1/agreement/signed-copy.pdf',
+      signedAt: new Date(),
     } as MerchantKyc,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -189,6 +195,19 @@ describe('MerchantsService', () => {
 
     await expect(service.activate('m1')).rejects.toMatchObject({
       code: ErrorCodes.KYC_INCOMPLETE,
+    });
+    expect(wallets.openWallet).not.toHaveBeenCalled();
+  });
+
+  it('blocks activation when the signed agreement copy is missing', async () => {
+    merchants.findOne.mockResolvedValue({
+      ...merchant,
+      kyc: { ...merchant.kyc, signedCopyPath: null },
+    });
+
+    await expect(service.activate('m1')).rejects.toMatchObject({
+      code: ErrorCodes.KYC_INCOMPLETE,
+      status: 409,
     });
     expect(wallets.openWallet).not.toHaveBeenCalled();
   });
@@ -290,6 +309,119 @@ describe('MerchantsService', () => {
     await expect(
       service.streamKycFile('s3://test/kyc/m1/missing.jpg'),
     ).rejects.toMatchObject({ code: ErrorCodes.KYC_DOCUMENT_NOT_FOUND });
+  });
+
+  describe('Agreement signature (Phase 1: paper upload)', () => {
+    const provisionedInput = (overrides: Record<string, unknown> = {}) =>
+      ({
+        mobile: '9876543210',
+        businessName: 'Acme',
+        contactPerson: 'Ravi',
+        email: 'ops@acme.test',
+        address: 'Mumbai',
+        password: 'ChangeMe#2026',
+        agreementAccepted: true,
+        agreementVersion: '2026.1',
+        signatureMethod: 'PAPER_UPLOAD',
+        ...overrides,
+      }) as any;
+
+    const mockProvisionedMerchant = () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        status: MerchantStatus.CREATED,
+        kyc: { ...merchant.kyc },
+      });
+      merchants.save.mockImplementation(async (value: Merchant) => value);
+      kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+    };
+
+    it('stamps agreement version, hash, method, and signedAt on onboarding', async () => {
+      mockProvisionedMerchant();
+
+      await service.registerSelfServe(provisionedInput());
+
+      expect(kycRecords.save).toHaveBeenCalled();
+      const saved = kycRecords.save.mock.calls[0][0] as MerchantKyc;
+      expect(saved.agreementVersion).toBe('2026.1');
+      expect(saved.agreementSha256).toBe(getCurrentAgreement().sha256);
+      expect(saved.signatureMethod).toBe('PAPER_UPLOAD');
+      expect(saved.signedAt).toBeInstanceOf(Date);
+      expect(saved.agreementSignedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects an explicitly stale agreement version with 422', async () => {
+      mockProvisionedMerchant();
+
+      await expect(
+        service.registerSelfServe(provisionedInput({ agreementVersion: '2020.1' })),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+    });
+
+    it('rejects digital e-sign with 422 until Phase 2', async () => {
+      mockProvisionedMerchant();
+
+      await expect(
+        service.registerSelfServe(
+          provisionedInput({ signatureMethod: 'DIGITAL_ESIGN' }),
+        ),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+    });
+
+    it('stores the uploaded signed agreement under the agreement namespace', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: { ...merchant.kyc },
+      });
+      merchants.save.mockImplementation(async (value: Merchant) => value);
+      kycRecords.save.mockImplementation(async (value: MerchantKyc) => value);
+
+      await service.storeKycFiles('m1', {
+        signedAgreement: {
+          originalname: 'signed.pdf',
+          buffer: Buffer.alloc(100),
+          mimetype: 'application/pdf',
+        },
+      });
+
+      expect(storage.putObject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'kyc/m1/agreement/signed-copy.pdf',
+        }),
+      );
+      const saved = kycRecords.save.mock.calls[0][0] as MerchantKyc;
+      expect(saved.signedCopyPath).toBe(
+        's3://test/kyc/m1/agreement/signed-copy.pdf',
+      );
+    });
+
+    it('rejects signed agreement files with disallowed types or oversize bodies', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: { ...merchant.kyc },
+      });
+
+      await expect(
+        service.storeKycFiles('m1', {
+          signedAgreement: {
+            originalname: 'signed.exe',
+            buffer: Buffer.alloc(100),
+            mimetype: 'application/x-msdownload',
+          },
+        }),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 400 });
+
+      await expect(
+        service.storeKycFiles('m1', {
+          signedAgreement: {
+            originalname: 'signed.pdf',
+            buffer: Buffer.alloc(11 * 1024 * 1024),
+            mimetype: 'application/pdf',
+          },
+        }),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 400 });
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
   });
 
   describe('Hierarchy & KYC Gating', () => {
