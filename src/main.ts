@@ -2,7 +2,7 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { randomUUID } from 'crypto';
-import { NextFunction, Response } from 'express';
+import { NextFunction, Response, json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/errors/http-exception.filter';
 import { RequestWithId } from './common/logging/request-id.middleware';
@@ -14,6 +14,11 @@ async function bootstrap() {
   const port = config.get<number>('port') ?? 3000;
 
   app.setGlobalPrefix('v1');
+  // Onboarding submits embed selfie + signature images as base64 data-URLs
+  // (easily megabytes). The Express default 100kb cap would reject them
+  // with entity.too.large before routing — surfacing as a generic 500.
+  app.use(json({ limit: '10mb' }));
+  app.use(urlencoded({ limit: '10mb', extended: true }));
   app.enableCors({
     origin: true,
     credentials: true,

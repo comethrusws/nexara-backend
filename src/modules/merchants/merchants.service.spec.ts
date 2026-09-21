@@ -420,10 +420,13 @@ describe('MerchantsService', () => {
       );
 
       const auditCall = storage.putObject.mock.calls.find(
-        ([args]: [{ key: string }]) => args.key === 'kyc/m1/agreement/audit.json',
+        (args) =>
+          (args[0] as { key: string }).key === 'kyc/m1/agreement/audit.json',
       );
       expect(auditCall).toBeDefined();
-      const bundle = JSON.parse(auditCall![0].body.toString('utf8'));
+      const bundle = JSON.parse(
+        ((auditCall![0] as unknown as { body: Buffer }).body.toString('utf8')),
+      );
       expect(bundle).toMatchObject({
         schema: 'nexara-esign-audit/1',
         merchantId: 'm1',
@@ -561,6 +564,29 @@ describe('MerchantsService', () => {
       expect(saved.signedCopyPath).toBe(
         's3://test/kyc/m1/agreement/signed-copy.pdf',
       );
+    });
+
+    it('reports which artifact failed when object storage is down', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: { ...merchant.kyc },
+      });
+      (storage.putObject as jest.Mock).mockRejectedValueOnce(
+        new Error('NoSuchBucket'),
+      );
+
+      await expect(
+        service.storeKycFiles('m1', {
+          signedAgreement: {
+            originalname: 'signed.pdf',
+            buffer: Buffer.alloc(100),
+            mimetype: 'application/pdf',
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: ErrorCodes.STORAGE_UNAVAILABLE,
+        status: 500,
+      });
     });
 
     it('rejects signed agreement files with disallowed types or oversize bodies', async () => {

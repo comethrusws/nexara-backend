@@ -33,6 +33,7 @@ export const ErrorCodes = {
   MPIN_INVALID: 'MPIN_INVALID',
   MPIN_NOT_SET: 'MPIN_NOT_SET',
   ONBOARDING_REQUIRED: 'ONBOARDING_REQUIRED',
+  STORAGE_UNAVAILABLE: 'STORAGE_UNAVAILABLE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

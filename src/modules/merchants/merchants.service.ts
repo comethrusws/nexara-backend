@@ -1556,12 +1556,12 @@ export class MerchantsService implements OnModuleInit {
         input.selfieBase64!,
         input.selfieContentType,
       );
-      const stored = await this.storage.putObject({
-        key: `kyc/${refreshed.id}/selfie${decoded.extension}`,
-        body: decoded.buffer,
-        contentType: decoded.contentType,
-      });
-      refreshed.kyc.selfiePath = stored.url;
+      refreshed.kyc.selfiePath = await this.putKycObject(
+        `kyc/${refreshed.id}/selfie${decoded.extension}`,
+        decoded.buffer,
+        decoded.contentType,
+        'selfie photo',
+      );
     }
 
     await this.applyMockDocumentMatchIfReady(refreshed);
@@ -1595,6 +1595,7 @@ export class MerchantsService implements OnModuleInit {
       file:
         { originalname: string; buffer: Buffer; mimetype?: string } | undefined,
       name: string,
+      stepLabel: string,
     ) => {
       if (!file) {
         return null;
@@ -1602,30 +1603,32 @@ export class MerchantsService implements OnModuleInit {
       const ext = file.originalname.includes('.')
         ? file.originalname.slice(file.originalname.lastIndexOf('.'))
         : '.bin';
-      const stored = await this.storage.putObject({
-        key: `kyc/${merchant.id}/${name}${ext}`,
-        body: file.buffer,
-        contentType: file.mimetype ?? 'application/octet-stream',
-      });
-      return stored.url;
+      return this.putKycObject(
+        `kyc/${merchant.id}/${name}${ext}`,
+        file.buffer,
+        file.mimetype ?? 'application/octet-stream',
+        stepLabel,
+      );
     };
     if (files.aadhaarFront) {
       merchant.kyc.aadhaarFrontPath = await save(
         files.aadhaarFront,
         'aadhaar-front',
+        'Aadhaar document',
       );
     }
     if (files.aadhaarBack) {
       merchant.kyc.aadhaarBackPath = await save(
         files.aadhaarBack,
         'aadhaar-back',
+        'Aadhaar document',
       );
     }
     if (files.pan) {
-      merchant.kyc.panImagePath = await save(files.pan, 'pan');
+      merchant.kyc.panImagePath = await save(files.pan, 'pan', 'PAN document');
     }
     if (files.selfie) {
-      merchant.kyc.selfiePath = await save(files.selfie, 'selfie');
+      merchant.kyc.selfiePath = await save(files.selfie, 'selfie', 'selfie photo');
     }
     if (files.signedAgreement) {
       this.assertSignedAgreementFile(files.signedAgreement);
@@ -1634,13 +1637,12 @@ export class MerchantsService implements OnModuleInit {
             files.signedAgreement.originalname.lastIndexOf('.'),
           )
         : '.bin';
-      const stored = await this.storage.putObject({
-        key: `kyc/${merchant.id}/agreement/signed-copy${ext}`,
-        body: files.signedAgreement.buffer,
-        contentType:
-          files.signedAgreement.mimetype ?? 'application/octet-stream',
-      });
-      merchant.kyc.signedCopyPath = stored.url;
+      merchant.kyc.signedCopyPath = await this.putKycObject(
+        `kyc/${merchant.id}/agreement/signed-copy${ext}`,
+        files.signedAgreement.buffer,
+        files.signedAgreement.mimetype ?? 'application/octet-stream',
+        'signed agreement copy',
+      );
     }
     await this.refreshDocumentMatch(merchant);
     await this.applyMockDocumentMatchIfReady(merchant);
@@ -1771,12 +1773,12 @@ export class MerchantsService implements OnModuleInit {
         input.selfieBase64!,
         input.selfieContentType,
       );
-      const stored = await this.storage.putObject({
-        key: `kyc/${merchant.id}/selfie${decoded.extension}`,
-        body: decoded.buffer,
-        contentType: decoded.contentType,
-      });
-      merchant.kyc.selfiePath = stored.url;
+      merchant.kyc.selfiePath = await this.putKycObject(
+        `kyc/${merchant.id}/selfie${decoded.extension}`,
+        decoded.buffer,
+        decoded.contentType,
+        'selfie photo',
+      );
     } else if (input.selfieBase64 !== undefined) {
       throw new NexaraError(
         ErrorCodes.INVALID_REQUEST,
@@ -1983,11 +1985,12 @@ export class MerchantsService implements OnModuleInit {
       );
     }
     const pngSha = sha256HexBytes(png);
-    const stored = await this.storage.putObject({
-      key: `kyc/${merchant.id}/agreement/signature.png`,
-      body: png,
-      contentType: 'image/png',
-    });
+    const storedUrl = await this.putKycObject(
+      `kyc/${merchant.id}/agreement/signature.png`,
+      png,
+      'image/png',
+      'drawn signature',
+    );
     const signer = await this.users.findByMobile(merchant.mobile);
     const otpVerifiedAt =
       await this.auth.latestOnboardingOtpVerifiedAt(merchant.mobile);
@@ -2011,32 +2014,66 @@ export class MerchantsService implements OnModuleInit {
       ip: requestMeta?.ip ?? null,
       userAgent: requestMeta?.userAgent ?? null,
     };
-    const auditStored = await this.storage.putObject({
-      key: `kyc/${merchant.id}/agreement/audit.json`,
-      body: Buffer.from(JSON.stringify(bundle, null, 2), 'utf8'),
-      contentType: 'application/json',
-    });
+    const auditUrl = await this.putKycObject(
+      `kyc/${merchant.id}/agreement/audit.json`,
+      Buffer.from(JSON.stringify(bundle, null, 2), 'utf8'),
+      'application/json',
+      'e-sign audit record',
+    );
     // Composite executed copy: agreement text + embedded signature image.
-    const signedPdf = await this.agreement.renderSignedPdf({
-      merchantId: merchant.id,
-      businessName: merchant.businessName,
-      tradeName: (merchant as { tradeName?: string }).tradeName,
-      contactPerson: merchant.contactPerson,
-      mobile: merchant.mobile,
-      version: merchant.kyc.agreementVersion ?? CURRENT_AGREEMENT_VERSION,
-      signaturePng: png,
-      typedName: input.typedName.trim(),
-      signedAt: merchant.kyc.signedAt ?? new Date(),
-    });
-    const pdfStored = await this.storage.putObject({
-      key: `kyc/${merchant.id}/agreement/signed-esign.pdf`,
-      body: signedPdf,
-      contentType: 'application/pdf',
-    });
+    let signedPdf: Buffer;
+    try {
+      signedPdf = await this.agreement.renderSignedPdf({
+        merchantId: merchant.id,
+        businessName: merchant.businessName,
+        tradeName: (merchant as { tradeName?: string }).tradeName,
+        contactPerson: merchant.contactPerson,
+        mobile: merchant.mobile,
+        version: merchant.kyc.agreementVersion ?? CURRENT_AGREEMENT_VERSION,
+        signaturePng: png,
+        typedName: input.typedName.trim(),
+        signedAt: merchant.kyc.signedAt ?? new Date(),
+      });
+    } catch (err) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Drawn signature image could not be processed. Please redraw and resubmit.',
+        422,
+      );
+    }
+    const pdfUrl = await this.putKycObject(
+      `kyc/${merchant.id}/agreement/signed-esign.pdf`,
+      signedPdf,
+      'application/pdf',
+      'executed agreement PDF',
+    );
     merchant.kyc.signedName = input.typedName.trim();
-    merchant.kyc.signatureImagePath = stored.url;
-    merchant.kyc.signatureAuditPath = auditStored.url;
-    merchant.kyc.signedPdfPath = pdfStored.url;
+    merchant.kyc.signatureImagePath = storedUrl;
+    merchant.kyc.signatureAuditPath = auditUrl;
+    merchant.kyc.signedPdfPath = pdfUrl;
+  }
+
+  /**
+   * KYC object-store write with a step-specific message. Raw storage
+   * failures (credentials, bucket, FS) would otherwise surface as a bare
+   * generic 500 with no hint about which artifact failed.
+   */
+  private async putKycObject(
+    key: string,
+    body: Buffer,
+    contentType: string,
+    stepLabel: string,
+  ): Promise<string> {
+    try {
+      const stored = await this.storage.putObject({ key, body, contentType });
+      return stored.url;
+    } catch (err) {
+      throw new NexaraError(
+        ErrorCodes.STORAGE_UNAVAILABLE,
+        `Could not store ${stepLabel}. Please try again.`,
+        500,
+      );
+    }
   }
 
   private requireOrganizationId(merchant: Merchant): string {
