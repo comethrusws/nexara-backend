@@ -16,6 +16,7 @@ import { Merchant } from './entities/merchant.entity';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { MerchantStatus } from './merchant.enums';
 import { MerchantsService } from './merchants.service';
+import { AgreementService } from './agreement/agreement.service';
 import { getCurrentAgreement } from './agreement/agreement-text';
 
 describe('MerchantsService', () => {
@@ -69,6 +70,12 @@ describe('MerchantsService', () => {
     updateMerchantProfile: jest.fn(),
   };
   const audit = { record: jest.fn() };
+  const agreement = {
+    getCurrent: jest.fn(),
+    renderSignedPdf: jest
+      .fn()
+      .mockResolvedValue(Buffer.from('%PDF-fake-signed')),
+  };
   const merchant: Merchant = {
     id: 'm1',
     businessName: 'Acme',
@@ -161,6 +168,7 @@ describe('MerchantsService', () => {
           useValue: { notifyUser: jest.fn() },
         },
         { provide: AuditService, useValue: audit },
+        { provide: AgreementService, useValue: agreement },
         {
           provide: FeeEngineService,
           useValue: { getConfig: jest.fn().mockResolvedValue(null) },
@@ -400,6 +408,16 @@ describe('MerchantsService', () => {
       expect(saved.signatureAuditPath).toBe(
         's3://test/kyc/m1/agreement/audit.json',
       );
+      expect(agreement.renderSignedPdf).toHaveBeenCalledWith(
+        expect.objectContaining({
+          merchantId: 'm1',
+          typedName: 'Ravi',
+          version: '2026.1',
+        }),
+      );
+      expect(saved.signedPdfPath).toBe(
+        's3://test/kyc/m1/agreement/signed-esign.pdf',
+      );
 
       const auditCall = storage.putObject.mock.calls.find(
         ([args]: [{ key: string }]) => args.key === 'kyc/m1/agreement/audit.json',
@@ -470,6 +488,32 @@ describe('MerchantsService', () => {
         status: 409,
       });
       expect(wallets.openWallet).not.toHaveBeenCalled();
+    });
+
+    it('returns the merchant agreement summary with artifact URLs', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: {
+          ...merchant.kyc,
+          signatureMethod: 'DIGITAL_ESIGN',
+          agreementVersion: '2026.1',
+          agreementSha256: getCurrentAgreement().sha256,
+          signedCopyPath: null,
+          signatureImagePath: 's3://test/kyc/m1/agreement/signature.png',
+          signatureAuditPath: 's3://test/kyc/m1/agreement/audit.json',
+          signedPdfPath: 's3://test/kyc/m1/agreement/signed-esign.pdf',
+        },
+      });
+
+      const summary = await service.getAgreementSummary('m1');
+
+      expect(summary.method).toBe('DIGITAL_ESIGN');
+      expect(summary.version).toBe('2026.1');
+      expect(summary.hashMatchesCurrent).toBe(true);
+      expect(summary.urls.signedPdf).toBe(
+        's3://test/kyc/m1/agreement/signed-esign.pdf',
+      );
+      expect(summary.urls.signedCopy).toBeNull();
     });
 
     it('activates a merchant with a complete sealed digital e-sign', async () => {

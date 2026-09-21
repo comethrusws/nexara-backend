@@ -269,6 +269,16 @@ export class PortalController {
     return { url: urls.signedCopy };
   }
 
+  @Get('kyc/agreement')
+  @ApiOperation({
+    summary: "Merchant's own executed agreement",
+    description:
+      'Returns the signing method, version, timestamps, hash currency, and view URLs for every executed-agreement artifact on file.',
+  })
+  agreementSummary(@CurrentUser() user: AuthUser) {
+    return this.merchants.getAgreementSummary(this.merchantId(user));
+  }
+
   @Get('kyc/signature')
   @ApiOperation({
     summary: "Merchant's own sealed digital signature",

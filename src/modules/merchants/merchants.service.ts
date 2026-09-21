@@ -31,6 +31,7 @@ import {
 } from './dto/merchant.dto';
 import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
+import { AgreementService } from './agreement/agreement.service';
 import {
   CURRENT_AGREEMENT_VERSION,
   assertSignaturePng,
@@ -62,6 +63,7 @@ export class MerchantsService implements OnModuleInit {
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
     private readonly feeEngine: FeeEngineService,
+    private readonly agreement: AgreementService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -549,6 +551,7 @@ export class MerchantsService implements OnModuleInit {
           signedCopy: (images as Record<string, string | null>).signedCopy ?? null,
           signature: (images as Record<string, string | null>).signature ?? null,
           signatureAudit: (images as Record<string, string | null>).signatureAudit ?? null,
+          signedPdf: (images as Record<string, string | null>).signedPdf ?? null,
         },
       },
     };
@@ -1156,6 +1159,7 @@ export class MerchantsService implements OnModuleInit {
       signedCopy: merchant.kyc.signedCopyPath,
       signature: merchant.kyc.signatureImagePath,
       signatureAudit: merchant.kyc.signatureAuditPath,
+      signedPdf: merchant.kyc.signedPdfPath,
     };
     const result: Record<string, string | null> = {};
     const entries = await Promise.all(
@@ -1168,6 +1172,31 @@ export class MerchantsService implements OnModuleInit {
       result[label] = url;
     }
     return result;
+  }
+
+  /**
+   * Everything the merchant's own status page needs about their executed
+   * agreement: method, version, timestamps, hash currency, and view URLs
+   * for whichever artifacts exist. Null URLs simply mean "not on file".
+   */
+  async getAgreementSummary(merchantId: string) {
+    const merchant = await this.requireMerchant(merchantId);
+    const urls = await this.getKycPresignedUrls(merchantId);
+    return {
+      method: merchant.kyc.signatureMethod ?? null,
+      version: merchant.kyc.agreementVersion ?? null,
+      signedAt: merchant.kyc.signedAt ?? null,
+      signedName: merchant.kyc.signedName ?? null,
+      hashMatchesCurrent:
+        merchant.kyc.agreementSha256 != null &&
+        merchant.kyc.agreementSha256 === getCurrentAgreementSha256(),
+      urls: {
+        signedCopy: urls.signedCopy ?? null,
+        signature: urls.signature ?? null,
+        signatureAudit: urls.signatureAudit ?? null,
+        signedPdf: urls.signedPdf ?? null,
+      },
+    };
   }
 
   private async presignStoredObject(stored: string): Promise<string> {
@@ -1987,9 +2016,27 @@ export class MerchantsService implements OnModuleInit {
       body: Buffer.from(JSON.stringify(bundle, null, 2), 'utf8'),
       contentType: 'application/json',
     });
+    // Composite executed copy: agreement text + embedded signature image.
+    const signedPdf = await this.agreement.renderSignedPdf({
+      merchantId: merchant.id,
+      businessName: merchant.businessName,
+      tradeName: (merchant as { tradeName?: string }).tradeName,
+      contactPerson: merchant.contactPerson,
+      mobile: merchant.mobile,
+      version: merchant.kyc.agreementVersion ?? CURRENT_AGREEMENT_VERSION,
+      signaturePng: png,
+      typedName: input.typedName.trim(),
+      signedAt: merchant.kyc.signedAt ?? new Date(),
+    });
+    const pdfStored = await this.storage.putObject({
+      key: `kyc/${merchant.id}/agreement/signed-esign.pdf`,
+      body: signedPdf,
+      contentType: 'application/pdf',
+    });
     merchant.kyc.signedName = input.typedName.trim();
     merchant.kyc.signatureImagePath = stored.url;
     merchant.kyc.signatureAuditPath = auditStored.url;
+    merchant.kyc.signedPdfPath = pdfStored.url;
   }
 
   private requireOrganizationId(merchant: Merchant): string {
@@ -2248,6 +2295,7 @@ export class MerchantsService implements OnModuleInit {
             hasSealedEsign: Boolean(
               merchant.kyc.signatureImagePath && merchant.kyc.signatureAuditPath,
             ),
+            hasSignedPdf: Boolean(merchant.kyc.signedPdfPath),
             signedAt: merchant.kyc.signedAt ?? null,
           }
         : null,
