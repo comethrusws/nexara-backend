@@ -1,7 +1,10 @@
 import { deflateSync } from 'zlib';
-import { PDFDocument } from 'pdf-lib';
-import { AgreementService } from './agreement.service';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { AgreementService, wrapTextToWidth } from './agreement.service';
 import { getCurrentAgreement } from './agreement-text';
+
+/** A4 content width used by the renderer (595.28 - 2*56). */
+const CONTENT_W = 595.28 - 2 * 56;
 
 const CRC_TABLE: Uint32Array = (() => {
   const table = new Uint32Array(256);
@@ -70,6 +73,58 @@ describe('AgreementService', () => {
     expect(a.equals(b)).toBe(true);
     const doc = await PDFDocument.load(a);
     expect(doc.getPageCount()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('wraps every line inside the A4 content box, even hostile inputs', async () => {
+    const doc = await PDFDocument.create();
+    const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+    const regular = await doc.embedFont(StandardFonts.Helvetica);
+    const hostile = [
+      'NEXARA MERCHANT SERVICES AGREEMENT v2026.1 — EXECUTED COPY',
+      'A'.repeat(200),
+      'bc46857d-daf0-4cc0-a83a-cbc39c3daed9'.repeat(4),
+      `Version 2026.1 · Effective 2026-01-01 · Document Ref ${'NXA-'.repeat(40)}`,
+    ];
+    for (const text of hostile) {
+      for (const [font, size] of [
+        [bold, 16],
+        [bold, 12],
+        [regular, 10],
+      ] as const) {
+        const lines = wrapTextToWidth(text, font, size, CONTENT_W);
+        expect(lines.length).toBeGreaterThan(0);
+        for (const line of lines) {
+          expect(font.widthOfTextAtSize(line, size)).toBeLessThanOrEqual(
+            CONTENT_W + 0.01,
+          );
+        }
+      }
+    }
+    expect(wrapTextToWidth('Short title', bold, 16, CONTENT_W)).toEqual([
+      'Short title',
+    ]);
+  });
+
+  it('renders hostile merchant details without throwing', async () => {
+    const evil = {
+      merchantId: 'x'.repeat(64),
+      businessName: 'Y'.repeat(180),
+      tradeName: 'Z'.repeat(180),
+      contactPerson: 'W'.repeat(120),
+      mobile: '9876543210',
+    };
+    const pdf = await service.renderPdf(evil);
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+    expect((await PDFDocument.load(pdf)).getPageCount()).toBeGreaterThanOrEqual(1);
+    const signed = await service.renderSignedPdf({
+      ...evil,
+      version: getCurrentAgreement().version,
+      signaturePng: makePng(300, 100),
+      typedName: 'V'.repeat(120),
+      signedAt: new Date('2026-09-21T10:00:00.000Z'),
+    });
+    expect(signed.subarray(0, 5).toString()).toBe('%PDF-');
+    expect((await PDFDocument.load(signed)).getPageCount()).toBeGreaterThanOrEqual(1);
   });
 
   it('renders an executed copy embedding the signature image', async () => {
