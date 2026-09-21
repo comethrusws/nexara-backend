@@ -2,11 +2,11 @@ import {
   Body,
   Controller,
   Get,
-  Header,
   Headers,
   Ip,
   Post,
   Query,
+  StreamableFile,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -54,7 +54,6 @@ export class OnboardingController {
       'Generates the current agreement pre-filled with the provisioned merchant details plus a deterministic document reference. Print, sign by hand, and upload the scan in onboarding Step 4.',
   })
   @ApiResponse({ status: 200, description: 'Agreement PDF bytes' })
-  @Header('Content-Type', 'application/pdf')
   async getAgreementPdf(@Query('mobile') mobile?: string) {
     const digits = String(mobile ?? '')
       .replace(/\D/g, '')
@@ -81,7 +80,13 @@ export class OnboardingController {
       contactPerson: merchant.contactPerson,
       mobile: merchant.mobile,
     });
-    return pdf;
+    // StreamableFile sets headers only on the success path. (A method-level
+    // @Header would also stick to thrown-error responses, letting JSON
+    // errors masquerade as PDFs downstream.)
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: `attachment; filename="Nexara-Agreement-${digits}.pdf"`,
+    });
   }
 
   @Post()
