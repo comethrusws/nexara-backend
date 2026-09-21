@@ -120,6 +120,15 @@ export class MerchantKyc {
   @Column({ name: 'signed_at', type: 'timestamptz', nullable: true })
   signedAt: Date | null;
 
+  @Column({ name: 'signed_name', type: 'varchar', length: 160, nullable: true })
+  signedName: string | null;
+
+  @Column({ name: 'signature_image_path', type: 'varchar', length: 500, nullable: true })
+  signatureImagePath: string | null;
+
+  @Column({ name: 'signature_audit_path', type: 'varchar', length: 500, nullable: true })
+  signatureAuditPath: string | null;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }

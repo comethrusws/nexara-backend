@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Header, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Headers,
+  Ip,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ApiOperation,
@@ -82,7 +91,11 @@ export class OnboardingController {
       'Creates merchant, runs mock KYC, stores selfie in S3, and returns a login session. MPIN is optional here and required only when initiating payouts.',
   })
   @ApiResponse({ status: 201, description: 'Merchant created and session issued' })
-  async register(@Body() raw: Record<string, unknown>) {
+  async register(
+    @Body() raw: Record<string, unknown>,
+    @Ip() ip?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
     const normalized = this.normalize(raw);
     const body = plainToInstance(PublicOnboardingDto, normalized);
     const errors = await validate(body, {
@@ -103,10 +116,13 @@ export class OnboardingController {
       body.password ??
       this.config.get<string>('auth.merchantDefaultPassword') ??
       'ChangeMe#2026';
-    const merchant = await this.merchants.registerSelfServe({
-      ...body,
-      password,
-    });
+    const merchant = await this.merchants.registerSelfServe(
+      {
+        ...body,
+        password,
+      },
+      { ip, userAgent },
+    );
     const user = await this.users.findByMobile(body.mobile);
     if (!user) {
       throw new NexaraError(
@@ -169,6 +185,10 @@ export class OnboardingController {
         : undefined,
       signatureMethod: raw.signatureMethod
         ? String(raw.signatureMethod)
+        : undefined,
+      typedName: raw.typedName ? String(raw.typedName) : undefined,
+      signaturePngBase64: raw.signaturePngBase64
+        ? String(raw.signaturePngBase64)
         : undefined,
       selfieBase64: raw.selfieBase64
         ? String(raw.selfieBase64)

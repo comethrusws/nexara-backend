@@ -151,7 +151,10 @@ describe('MerchantsService', () => {
         { provide: UsersService, useValue: users },
         {
           provide: AuthService,
-          useValue: { assertRecentOnboardingOtp: jest.fn() },
+          useValue: {
+            assertRecentOnboardingOtp: jest.fn(),
+            latestOnboardingOtpVerifiedAt: jest.fn().mockResolvedValue(null),
+          },
         },
         {
           provide: NotificationsService,
@@ -358,14 +361,135 @@ describe('MerchantsService', () => {
       ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
     });
 
-    it('rejects digital e-sign with 422 until Phase 2', async () => {
+    const makePng = (width: number, height: number, totalBytes = 3000) => {
+      const header = Buffer.alloc(33);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+      header.writeUInt32BE(13, 8);
+      header.write('IHDR', 12);
+      header.writeUInt32BE(width, 16);
+      header.writeUInt32BE(height, 20);
+      header[24] = 8;
+      header[25] = 2;
+      return Buffer.concat([header, Buffer.alloc(Math.max(0, totalBytes - 33), 7)]);
+    };
+    const pngDataUrl = (buf: Buffer) =>
+      `data:image/png;base64,${buf.toString('base64')}`;
+    const digitalInput = (overrides: Record<string, unknown> = {}) =>
+      provisionedInput({
+        signatureMethod: 'DIGITAL_ESIGN',
+        typedName: 'Ravi',
+        signaturePngBase64: pngDataUrl(makePng(600, 200)),
+        ...overrides,
+      });
+
+    it('seals a digital e-sign: stores PNG, audit bundle, stamps name', async () => {
+      mockProvisionedMerchant();
+
+      await service.registerSelfServe(digitalInput(), {
+        ip: '1.2.3.4',
+        userAgent: 'jest',
+      });
+
+      expect(kycRecords.save).toHaveBeenCalled();
+      const saved = kycRecords.save.mock.calls[0][0] as MerchantKyc;
+      expect(saved.signatureMethod).toBe('DIGITAL_ESIGN');
+      expect(saved.signedName).toBe('Ravi');
+      expect(saved.signatureImagePath).toBe(
+        's3://test/kyc/m1/agreement/signature.png',
+      );
+      expect(saved.signatureAuditPath).toBe(
+        's3://test/kyc/m1/agreement/audit.json',
+      );
+
+      const auditCall = storage.putObject.mock.calls.find(
+        ([args]: [{ key: string }]) => args.key === 'kyc/m1/agreement/audit.json',
+      );
+      expect(auditCall).toBeDefined();
+      const bundle = JSON.parse(auditCall![0].body.toString('utf8'));
+      expect(bundle).toMatchObject({
+        schema: 'nexara-esign-audit/1',
+        merchantId: 'm1',
+        method: 'DIGITAL_ESIGN',
+        typedName: 'Ravi',
+        agreementVersion: '2026.1',
+        ip: '1.2.3.4',
+        userAgent: 'jest',
+      });
+      expect(String(bundle.documentRef)).toMatch(/^NXA-/);
+      expect(String(bundle.signaturePngSha256)).toHaveLength(64);
+    });
+
+    it('rejects digital e-sign when the typed name does not match the contact', async () => {
+      mockProvisionedMerchant();
+
+      await expect(
+        service.registerSelfServe(digitalInput({ typedName: 'Someone Else' })),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+    });
+
+    it('rejects digital e-sign with missing or invalid signature image', async () => {
       mockProvisionedMerchant();
 
       await expect(
         service.registerSelfServe(
-          provisionedInput({ signatureMethod: 'DIGITAL_ESIGN' }),
+          digitalInput({ signaturePngBase64: undefined }),
         ),
       ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+
+      await expect(
+        service.registerSelfServe(
+          digitalInput({
+            signaturePngBase64: 'data:image/jpeg;base64,/9j/AAAA',
+          }),
+        ),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+
+      await expect(
+        service.registerSelfServe(
+          digitalInput({
+            signaturePngBase64: pngDataUrl(makePng(10, 10)),
+          }),
+        ),
+      ).rejects.toMatchObject({ code: ErrorCodes.INVALID_REQUEST, status: 422 });
+    });
+
+    it('blocks activation when a digital e-sign bundle is incomplete', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: {
+          ...merchant.kyc,
+          signatureMethod: 'DIGITAL_ESIGN',
+          signedCopyPath: null,
+          signatureImagePath: null,
+          signatureAuditPath: null,
+        },
+      });
+
+      await expect(service.activate('m1')).rejects.toMatchObject({
+        code: ErrorCodes.KYC_INCOMPLETE,
+        status: 409,
+      });
+      expect(wallets.openWallet).not.toHaveBeenCalled();
+    });
+
+    it('activates a merchant with a complete sealed digital e-sign', async () => {
+      merchants.findOne.mockResolvedValue({
+        ...merchant,
+        kyc: {
+          ...merchant.kyc,
+          signatureMethod: 'DIGITAL_ESIGN',
+          signedCopyPath: null,
+          signatureImagePath: 's3://test/kyc/m1/agreement/signature.png',
+          signatureAuditPath: 's3://test/kyc/m1/agreement/audit.json',
+        },
+      });
+      merchants.save.mockImplementation(async (value: Merchant) => value);
+      wallets.openWallet.mockResolvedValue({});
+
+      const result = await service.activate('m1');
+
+      expect(wallets.openWallet).toHaveBeenCalled();
+      expect(result.status).toBe(MerchantStatus.ACTIVE);
     });
 
     it('stores the uploaded signed agreement under the agreement namespace', async () => {

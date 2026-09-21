@@ -261,7 +261,7 @@ export class PublicOnboardingDto {
 
   @ApiPropertyOptional({
     description:
-      'How the agreement was executed. PAPER_UPLOAD in Phase 1; DIGITAL_ESIGN reserved for Phase 2.',
+      'How the agreement was executed: PAPER_UPLOAD (scan of wet signature) or DIGITAL_ESIGN (in-browser signature).',
     example: 'PAPER_UPLOAD',
   })
   @IsOptional()
@@ -270,6 +270,23 @@ export class PublicOnboardingDto {
     message: 'signatureMethod must be PAPER_UPLOAD or DIGITAL_ESIGN',
   })
   signatureMethod?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Full name typed by the signer (DIGITAL_ESIGN only). Must match the authorised contact person.',
+    example: 'Ravi Kumar',
+  })
+  @IsOptional()
+  @IsString()
+  typedName?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'PNG data-URL or raw base64 of the drawn signature (DIGITAL_ESIGN only).',
+  })
+  @IsOptional()
+  @IsString()
+  signaturePngBase64?: string;
 
   /** Optional data-URL or raw base64 selfie for S3 storage */
   @IsOptional()

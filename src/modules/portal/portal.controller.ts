@@ -269,6 +269,26 @@ export class PortalController {
     return { url: urls.signedCopy };
   }
 
+  @Get('kyc/signature')
+  @ApiOperation({
+    summary: "Merchant's own sealed digital signature",
+    description:
+      'Returns a short-lived view URL for the drawn signature sealed during digital e-sign.',
+  })
+  async signature(@CurrentUser() user: AuthUser) {
+    const urls = await this.merchants.getKycPresignedUrls(
+      this.merchantId(user),
+    );
+    if (!urls.signature) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'No sealed digital signature is on file for this merchant',
+        404,
+      );
+    }
+    return { url: urls.signature };
+  }
+
   @Post('mpin/reset/request')
   @ApiOperation({
     summary: 'Request OTP to reset forgotten transaction PIN',

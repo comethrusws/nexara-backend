@@ -102,3 +102,54 @@ export function maskMobile(mobile: string): string {
   if (digits.length < 5) return '+91 ••••• •••••';
   return `+91 ••••• ${digits.slice(-5)}`;
 }
+
+/**
+ * Normalizes a signer name for comparison: lowercase, trim, collapse inner
+ * whitespace. "Ravi  Kumar" and "ravi kumar" compare equal.
+ */
+export function normalizeSignerName(name: string): string {
+  return name.toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+export function signerNamesMatch(a: string, b: string): boolean {
+  if (!a?.trim() || !b?.trim()) return false;
+  return normalizeSignerName(a) === normalizeSignerName(b);
+}
+
+export const SIGNATURE_PNG_MIN_WIDTH = 200;
+export const SIGNATURE_PNG_MIN_HEIGHT = 60;
+export const SIGNATURE_PNG_MIN_BYTES = 2048;
+
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * Backstop validation for drawn-signature PNGs (server side; the client
+ * already enforces stroke-count / bounding-box rules). Reads only the PNG
+ * header — no image decoder dependency.
+ */
+export function assertSignaturePng(
+  buffer: Buffer,
+): { width: number; height: number } {
+  if (!buffer?.length || buffer.length < SIGNATURE_PNG_MIN_BYTES) {
+    throw new Error('Signature image is too small to be a real signature');
+  }
+  if (buffer.length < 33 || !buffer.subarray(0, 8).equals(PNG_MAGIC)) {
+    throw new Error('Signature must be a PNG image');
+  }
+  const type = buffer.subarray(12, 16).toString('ascii');
+  if (type !== 'IHDR') {
+    throw new Error('Signature PNG header is invalid');
+  }
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  if (width < SIGNATURE_PNG_MIN_WIDTH || height < SIGNATURE_PNG_MIN_HEIGHT) {
+    throw new Error(
+      `Signature canvas must be at least ${SIGNATURE_PNG_MIN_WIDTH}x${SIGNATURE_PNG_MIN_HEIGHT}px`,
+    );
+  }
+  return { width, height };
+}
+
+export function sha256HexBytes(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
+}

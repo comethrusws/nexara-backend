@@ -33,8 +33,12 @@ import { MerchantKyc } from './entities/merchant-kyc.entity';
 import { Merchant } from './entities/merchant.entity';
 import {
   CURRENT_AGREEMENT_VERSION,
+  assertSignaturePng,
+  buildDocumentRef,
   getAgreementByVersion,
   getCurrentAgreementSha256,
+  sha256HexBytes,
+  signerNamesMatch,
 } from './agreement/agreement-text';
 import { FeeType, MerchantStatus, MerchantTier } from './merchant.enums';
 
@@ -536,12 +540,15 @@ export class MerchantsService implements OnModuleInit {
           merchant.kyc.agreementSha256 === getCurrentAgreementSha256(),
         signatureMethod: merchant.kyc?.signatureMethod ?? null,
         signedAt: merchant.kyc?.signedAt ?? null,
+        signedName: merchant.kyc?.signedName ?? null,
         images: {
           aadhaarFront: images.aadhaarFront,
           aadhaarBack: images.aadhaarBack,
           pan: images.pan,
           selfie: images.selfie,
           signedCopy: (images as Record<string, string | null>).signedCopy ?? null,
+          signature: (images as Record<string, string | null>).signature ?? null,
+          signatureAudit: (images as Record<string, string | null>).signatureAudit ?? null,
         },
       },
     };
@@ -973,7 +980,15 @@ export class MerchantsService implements OnModuleInit {
     if (!kyc.latitude || !kyc.longitude) {
       missingOnboarding.push('GPS location');
     }
-    if (!kyc.agreementSignedAt || !kyc.signedCopyPath) {
+    if (!kyc.agreementSignedAt) {
+      missingOnboarding.push('Merchant agreement (consent missing)');
+    } else if (kyc.signatureMethod === 'DIGITAL_ESIGN') {
+      if (!kyc.signatureImagePath || !kyc.signatureAuditPath) {
+        missingOnboarding.push('Merchant agreement (sealed e-sign bundle missing)');
+      }
+    } else if (!kyc.signedCopyPath) {
+      // PAPER_UPLOAD (and legacy rows stamped before signature capture):
+      // the wet-signed scan must be on file.
       missingOnboarding.push('Merchant agreement (signed copy missing)');
     }
     if (!merchant.organizationId) {
@@ -1139,6 +1154,8 @@ export class MerchantsService implements OnModuleInit {
       pan: merchant.kyc.panImagePath,
       selfie: merchant.kyc.selfiePath,
       signedCopy: merchant.kyc.signedCopyPath,
+      signature: merchant.kyc.signatureImagePath,
+      signatureAudit: merchant.kyc.signatureAuditPath,
     };
     const result: Record<string, string | null> = {};
     const entries = await Promise.all(
@@ -1293,7 +1310,10 @@ export class MerchantsService implements OnModuleInit {
     return this.requireMerchant(id);
   }
 
-  async registerSelfServe(input: PublicOnboardingDto) {
+  async registerSelfServe(
+    input: PublicOnboardingDto,
+    requestMeta?: { ip?: string; userAgent?: string },
+  ) {
     const mobile = input.mobile.replace(/\D/g, '').slice(-10);
     const existingUser = await this.users.findByMobile(mobile);
 
@@ -1337,6 +1357,7 @@ export class MerchantsService implements OnModuleInit {
           existingMerchant,
           existingUser.id,
           input,
+          requestMeta,
         );
       }
 
@@ -1367,6 +1388,7 @@ export class MerchantsService implements OnModuleInit {
         return this.completeProvisionedMerchantOnboarding(
           existingMerchant,
           input,
+          requestMeta,
         );
       }
       throw new NexaraError(
@@ -1386,6 +1408,7 @@ export class MerchantsService implements OnModuleInit {
   private async completeProvisionedMerchantOnboarding(
     merchant: Merchant,
     input: PublicOnboardingDto,
+    requestMeta?: { ip?: string; userAgent?: string },
   ) {
     const email = input.email.toLowerCase().trim();
     merchant.businessName = input.businessName;
@@ -1423,13 +1446,14 @@ export class MerchantsService implements OnModuleInit {
       mpin: input.mpin,
       role: entityUserRole,
     });
-    return this.finalizeSelfServeOnboarding(merchant.id, input);
+    return this.finalizeSelfServeOnboarding(merchant.id, input, requestMeta);
   }
 
   private async resumeSelfServeOnboarding(
     merchant: Merchant,
     userId: string,
     input: PublicOnboardingDto,
+    requestMeta?: { ip?: string; userAgent?: string },
   ) {
     const email = input.email.toLowerCase().trim();
     merchant.businessName = input.businessName;
@@ -1449,12 +1473,13 @@ export class MerchantsService implements OnModuleInit {
       name: input.contactPerson,
       password: input.password,
     });
-    return this.finalizeSelfServeOnboarding(merchant.id, input);
+    return this.finalizeSelfServeOnboarding(merchant.id, input, requestMeta);
   }
 
   private async finalizeSelfServeOnboarding(
     merchantId: string,
     input: PublicOnboardingDto,
+    requestMeta?: { ip?: string; userAgent?: string },
   ) {
     if (input.pan) {
       await this.verifyPan(merchantId, input.pan, input.contactPerson);
@@ -1475,13 +1500,6 @@ export class MerchantsService implements OnModuleInit {
     }
     if (input.agreementAccepted) {
       const method = input.signatureMethod ?? 'PAPER_UPLOAD';
-      if (method !== 'PAPER_UPLOAD') {
-        throw new NexaraError(
-          ErrorCodes.INVALID_REQUEST,
-          'Digital e-sign is not available yet. Please download, sign, and upload the agreement instead.',
-          422,
-        );
-      }
       // Old clients may omit the version; the baked-in text they show equals
       // the current canonical text, so stamping current stays accurate.
       // An explicitly stale version fails closed (422) per the e-sign PRD.
@@ -1499,6 +1517,9 @@ export class MerchantsService implements OnModuleInit {
       refreshed.kyc.agreementVersion = record.version;
       refreshed.kyc.agreementSha256 = record.sha256;
       refreshed.kyc.signatureMethod = method;
+      if (method === 'DIGITAL_ESIGN') {
+        await this.sealDigitalSignature(refreshed, input, requestMeta);
+      }
     }
 
     if (this.looksLikeImagePayload(input.selfieBase64)) {
@@ -1868,6 +1889,109 @@ export class MerchantsService implements OnModuleInit {
     }
   }
 
+  private decodeSignaturePng(value: string): Buffer {
+    const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(value.trim());
+    const contentType = (dataUrl?.[1] ?? 'image/png').toLowerCase();
+    if (contentType !== 'image/png') {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Drawn signature must be a PNG image',
+        422,
+      );
+    }
+    const base64 = dataUrl?.[2] ?? value.replace(/^base64,/i, '').trim();
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Drawn signature is empty',
+        422,
+      );
+    }
+    return buffer;
+  }
+
+  /**
+   * Seals an in-browser digital signature: validates the typed name against
+   * the authorised contact, backstop-validates the PNG, stores it, and seals
+   * a server-side audit bundle binding signer + version + hashes + OTP
+   * lineage. The bundle (not the client) is the tamper-evident record.
+   */
+  private async sealDigitalSignature(
+    merchant: Merchant,
+    input: PublicOnboardingDto,
+    requestMeta?: { ip?: string; userAgent?: string },
+  ): Promise<void> {
+    if (!input.typedName?.trim()) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Typed full name is required for digital e-sign',
+        422,
+      );
+    }
+    if (!signerNamesMatch(input.typedName, input.contactPerson)) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Typed name must match the authorised contact person',
+        422,
+      );
+    }
+    if (!input.signaturePngBase64) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        'Drawn signature image is required for digital e-sign',
+        422,
+      );
+    }
+    const png = this.decodeSignaturePng(input.signaturePngBase64);
+    try {
+      assertSignaturePng(png);
+    } catch (err: any) {
+      throw new NexaraError(
+        ErrorCodes.INVALID_REQUEST,
+        err?.message || 'Drawn signature image is invalid',
+        422,
+      );
+    }
+    const pngSha = sha256HexBytes(png);
+    const stored = await this.storage.putObject({
+      key: `kyc/${merchant.id}/agreement/signature.png`,
+      body: png,
+      contentType: 'image/png',
+    });
+    const signer = await this.users.findByMobile(merchant.mobile);
+    const otpVerifiedAt =
+      await this.auth.latestOnboardingOtpVerifiedAt(merchant.mobile);
+    const bundle = {
+      schema: 'nexara-esign-audit/1',
+      documentRef: buildDocumentRef(
+        merchant.id,
+        merchant.kyc.agreementVersion ?? CURRENT_AGREEMENT_VERSION,
+      ),
+      merchantId: merchant.id,
+      userId: signer?.id ?? null,
+      mobile: merchant.mobile,
+      method: 'DIGITAL_ESIGN',
+      typedName: input.typedName.trim(),
+      agreementVersion: merchant.kyc.agreementVersion,
+      agreementSha256: merchant.kyc.agreementSha256,
+      signaturePngSha256: pngSha,
+      signedAt:
+        merchant.kyc.signedAt?.toISOString() ?? new Date().toISOString(),
+      otpVerifiedAt: otpVerifiedAt?.toISOString() ?? null,
+      ip: requestMeta?.ip ?? null,
+      userAgent: requestMeta?.userAgent ?? null,
+    };
+    const auditStored = await this.storage.putObject({
+      key: `kyc/${merchant.id}/agreement/audit.json`,
+      body: Buffer.from(JSON.stringify(bundle, null, 2), 'utf8'),
+      contentType: 'application/json',
+    });
+    merchant.kyc.signedName = input.typedName.trim();
+    merchant.kyc.signatureImagePath = stored.url;
+    merchant.kyc.signatureAuditPath = auditStored.url;
+  }
+
   private requireOrganizationId(merchant: Merchant): string {
     if (!merchant.organizationId) {
       throw new NexaraError(
@@ -2121,6 +2245,9 @@ export class MerchantsService implements OnModuleInit {
             agreementVersion: merchant.kyc.agreementVersion ?? null,
             signatureMethod: merchant.kyc.signatureMethod ?? null,
             hasSignedCopy: Boolean(merchant.kyc.signedCopyPath),
+            hasSealedEsign: Boolean(
+              merchant.kyc.signatureImagePath && merchant.kyc.signatureAuditPath,
+            ),
             signedAt: merchant.kyc.signedAt ?? null,
           }
         : null,

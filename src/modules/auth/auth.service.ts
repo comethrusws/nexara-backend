@@ -93,6 +93,23 @@ export class AuthService {
     }
   }
 
+  /**
+   * Timestamp of the latest consumed ONBOARDING OTP for this mobile, if any.
+   * Used as identity lineage inside sealed e-sign audit bundles.
+   */
+  async latestOnboardingOtpVerifiedAt(mobile: string): Promise<Date | null> {
+    const cleanMobile = this.normalizeMobile(mobile);
+    const row = await this.otps.findOne({
+      where: {
+        mobile: cleanMobile,
+        purpose: 'ONBOARDING',
+        consumedAt: Not(IsNull()),
+      },
+      order: { consumedAt: 'DESC' },
+    });
+    return row?.consumedAt ?? null;
+  }
+
   /** Only mobiles pre-provisioned by admin may use ONBOARDING OTP. */
   private async assertProvisionedForOnboarding(cleanMobile: string): Promise<void> {
     const merchant = await this.merchants.findOne({
